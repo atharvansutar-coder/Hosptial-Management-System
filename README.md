@@ -91,6 +91,18 @@ cloudflared tunnel run careflow
 
 Configure the tunnel's `config.yml` ingress to send `careflow.example.com` to `http://localhost:3000` and end with a `http_status:404` fallback; Cloudflare's dashboard also offers a guided public-hostname setup. Run the tunnel as a service so it starts again after reboot. Do not expose port 3000 directly on the router. A tunnel makes the service internet-reachable and sends traffic through Cloudflare; use strong unique passwords, keep the laptop and dependencies updated, and only do this if that data-routing arrangement is acceptable. For normal patient use, a trusted local Wi-Fi network is simpler.
 
+### Connect the Netlify frontend to this laptop
+
+The Netlify site is only the frontend. To route its `/api` requests to this laptop without browser cross-origin cookies:
+
+1. On the laptop, set `COOKIE_SECURE=true` in `.env`, then run `npm run start` in one terminal and leave it running.
+2. In another terminal, run `cloudflared tunnel --url http://localhost:3000`. Copy the temporary `https://...trycloudflare.com` URL it prints.
+3. In Netlify, open the CareFlow site's **Site configuration → Environment variables** and add `CAREFLOW_API_ORIGIN` with that HTTPS URL (origin only, no path or trailing route).
+4. Trigger a fresh deployment of the latest GitHub commit in Netlify. The build creates a same-origin `/api` proxy rule for the frontend.
+5. Test the Netlify site. Keep both terminals and the laptop online. The temporary URL changes when the tunnel restarts, so update the Netlify variable and redeploy after that. Never put `JWT_SECRET` or other backend credentials in Netlify.
+
+This makes the laptop API publicly reachable through the tunnel. Share the public site only with users you intend to give access to; keep passwords strong, configure external-drive backups, and stop the tunnel when it is not needed. If Netlify builds without `CAREFLOW_API_ORIGIN`, the build will fail instead of publishing a frontend disconnected from its API.
+
 ## Backups and restore
 
 Set `BACKUP_DIR` in `.env` to a folder on a separate USB/external drive. Backups include a consistent SQLite copy and the PDF directory. The scheduled job runs at `BACKUP_CRON` (default 2:00 AM) and keeps the newest 14 backup folders. Run one manually with:

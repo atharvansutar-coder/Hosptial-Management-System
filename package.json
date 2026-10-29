@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && tsc --noEmit -p tsconfig.server.json && vite build",
+    "build": "tsc -b && tsc --noEmit -p tsconfig.server.json && vite build && node scripts/write-netlify-redirects.mjs",
     "preview": "vite preview",
     "start": "npm run build && tsx server/index.ts",
     "test": "vitest run",
