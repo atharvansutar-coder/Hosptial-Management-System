@@ -262,10 +262,18 @@ h1, h2, h3, p { margin-top: 0; }
 .completed-banner small { color: #84938b; }
 .ticket-privacy { display: flex; align-items: center; gap: 6px; margin-top: 17px; color: #96a19b; font-size: 8px; }
 .ticket-privacy svg { color: #72a188; }
+.ticket-patient-details { margin-top: 14px; padding: 14px; border: 1px solid #e7ece8; border-radius: 8px; background: #f9fbf9; }
+.ticket-patient-details h2 { display: flex; align-items: center; gap: 7px; margin: 0; color: #40594f; font: 700 11px Manrope, sans-serif; }
+.ticket-patient-details h2 svg { color: #72a188; }
+.ticket-patient-details > p { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; color: #718078; font-size: 10px; }
+.ticket-patient-details .patient-details-list { grid-template-columns: 1fr 1fr; }
+.ticket-details-access { margin: 12px 0 0; color: #718078; font-size: 9px; line-height: 1.6; }
+.ticket-details-access .button { margin-top: 7px; }
 .qr-ticket { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 26px 20px; border: 1px solid #e7ece8; border-radius: 11px; background: #eff5ef; }
 .qr-title { display: flex; align-items: center; gap: 7px; margin-bottom: 19px; color: #74897d; font-size: 8px; letter-spacing: .8px; font-weight: 700; }
 .qr-paper { padding: 13px; background: white; border: 1px solid #e9ede9; border-radius: 8px; box-shadow: 0 7px 20px #31513f0c; }
 .qr-ticket > strong { margin-top: 17px; color: #536e60; font-size: 10px; }
+.qr-ticket > small { max-width: 190px; margin-top: 7px; color: #7d8f84; font-size: 9px; line-height: 1.5; text-align: center; }
 .qr-code-label { margin-top: 6px; color: #8b9a91; font-size: 9px; letter-spacing: 1.4px; }
 .tracking-help { display: flex; justify-content: center; align-items: center; gap: 7px; margin-top: 17px; color: #87958e; font-size: 10px; }
 .tracking-help svg { color: #79a28b; }
@@ -474,10 +482,14 @@ h1, h2, h3, p { margin-top: 0; }
 .record-pdf-list { display: grid; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf0ee; }
 .record-pdf-list > strong { display: flex; align-items: center; gap: 6px; color: #52685c; font-size: 10px; }
 .record-pdf-item { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; color: #718078; font-size: 10px; }
-.record-pdf-item > span { flex: 1; min-width: 120px; overflow-wrap: anywhere; }
+.record-pdf-item > span { display: grid; flex: 1; min-width: 120px; gap: 3px; overflow-wrap: anywhere; }
+.record-pdf-item > span strong { color: #52685c; font-size: 10px; }
+.record-pdf-item > span small { color: #849188; font-size: 9px; line-height: 1.5; }
 .record-pdf-item > a { color: #286d56; font-weight: 700; }
 .record-pdf-item .queue-action { min-height: 28px; }
-.record-upload-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid #edf0ee; }
+.record-upload-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid #edf0ee; }
+.record-upload-form .record-upload-description, .record-upload-form .button { grid-column: 1 / -1; }
+.record-upload-form .button { justify-self: start; }
 .record-upload-form .patient-field input[type="file"], .record-form-grid input[type="file"] { width: 100%; padding: 8px; border: 1px solid #e4eae6; border-radius: 6px; background: #fff; color: #52675c; font-size: 10px; }
 .record-upload-form progress, .visit-record-form progress { width: 100%; height: 7px; grid-column: 1 / -1; accent-color: #2f795f; }
 .visit-record-form { display: grid; gap: 13px; padding: 16px; border: 1px solid #e3ebe5; border-radius: 8px; background: #f9fbf9; }

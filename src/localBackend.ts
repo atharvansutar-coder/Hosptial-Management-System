@@ -12,6 +12,17 @@ export type User = {
   isAnonymous: boolean
 }
 
+export type MedicalDocumentCategory =
+  | 'Blood Test'
+  | 'Urine Test'
+  | 'X-ray'
+  | 'MRI'
+  | 'CT Scan'
+  | 'ECG'
+  | 'Ultrasound'
+  | 'Prescription'
+  | 'Other Medical Reports'
+
 type BackendUser = User & {
   role: 'patient' | 'receptionist' | 'doctor' | 'admin'
   hospitalId: string | null
@@ -206,21 +217,34 @@ export async function getIdTokenResult(user: User) {
   return { claims }
 }
 
-type UploadedPdf = { name: string; path: string; uploadedAt: { seconds: number; nanoseconds: number } }
+type UploadedMedicalDocument = {
+  id: string
+  name: string
+  path: string
+  uploadedAt: { seconds: number; nanoseconds: number }
+  contentType: string
+  category: MedicalDocumentCategory
+  description: string
+  uploadedByUserId: string
+  uploaderRole: 'receptionist' | 'doctor' | 'admin'
+}
 
 export async function getBlob(fileReference: { path: string }): Promise<Blob> {
   const response = await fetch(`${apiBase}/files?path=${encodeURIComponent(fileReference.path)}`, { credentials: 'same-origin' })
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ error: 'Unable to download this private PDF.' }))
-    throw new ApiError(typeof body.error === 'string' ? body.error : 'Unable to download this private PDF.', response.status)
+    const body = await response.json().catch(() => ({ error: 'Unable to download this private medical document.' }))
+    throw new ApiError(typeof body.error === 'string' ? body.error : 'Unable to download this private medical document.', response.status)
   }
   return response.blob()
 }
 
 export function ref(_storage: unknown, path: string) { return { path } }
-export function uploadBytesResumable(fileReference: { path: string }, file: File, metadata?: { contentType?: string; customMetadata?: { recordId?: string } }) {
+export function uploadBytesResumable(fileReference: { path: string }, file: File, metadata?: {
+  contentType?: string
+  customMetadata?: { recordId?: string; category?: string; description?: string }
+}) {
   return {
-    result: undefined as UploadedPdf | undefined,
+    result: undefined as UploadedMedicalDocument | undefined,
     on(
       _event: 'state_changed',
       progress: (snapshot: { bytesTransferred: number; totalBytes: number }) => void,
@@ -228,7 +252,8 @@ export function uploadBytesResumable(fileReference: { path: string }, file: File
       complete: () => void,
     ) {
       const parts = fileReference.path.split('/')
-      if (parts.length !== 4 || parts[0] !== 'records' || !metadata?.customMetadata?.recordId) {
+      const customMetadata = metadata?.customMetadata
+      if (parts.length !== 4 || parts[0] !== 'records' || !customMetadata?.recordId || !customMetadata.category) {
         queueMicrotask(() => error(new Error('The patient record upload path is invalid.')))
         return
       }
@@ -236,23 +261,25 @@ export function uploadBytesResumable(fileReference: { path: string }, file: File
       formData.set('file', file)
       formData.set('hospitalId', parts[1])
       formData.set('patientId', parts[2])
-      formData.set('recordId', metadata.customMetadata.recordId)
+      formData.set('recordId', customMetadata.recordId)
+      formData.set('category', customMetadata.category)
+      formData.set('description', customMetadata.description ?? '')
       const xhr = new XMLHttpRequest()
       xhr.open('POST', `${apiBase}/files`)
       xhr.withCredentials = true
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) progress({ bytesTransferred: event.loaded, totalBytes: event.total })
       }
-      xhr.onerror = () => error(new Error('The local server could not be reached while uploading the PDF.'))
+      xhr.onerror = () => error(new Error('The local server could not be reached while uploading the medical document.'))
       xhr.onload = () => {
         if (xhr.status < 200 || xhr.status >= 300) {
-          let message = 'Unable to upload this PDF.'
+          let message = 'Unable to upload this medical document.'
           try { message = JSON.parse(xhr.responseText).error ?? message } catch { /* The server returned a non-JSON error. */ }
           error(new ApiError(message, xhr.status))
           return
         }
         try {
-          this.result = JSON.parse(xhr.responseText) as UploadedPdf
+          this.result = JSON.parse(xhr.responseText) as UploadedMedicalDocument
           complete()
         } catch {
           error(new Error('The local server returned an invalid upload response.'))

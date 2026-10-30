@@ -13,12 +13,47 @@ import { clearSession, issueSession, login, registerPatient, requireAuth, userBy
 import { acceptWaitlistOffer, handleSlotRelease, patientLanguage, queueAppointmentUpdate, queueNotification } from './smart'
 
 const app = express()
-app.use(helmet())
-const pdfUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } })
+app.use((request, response, next) => {
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        upgradeInsecureRequests: request.secure ? [] : null,
+      },
+    },
+    crossOriginOpenerPolicy: request.secure ? undefined : false,
+    hsts: request.secure ? undefined : false,
+    originAgentCluster: request.secure ? undefined : false,
+  })(request, response, next)
+})
+const medicalDocumentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } })
 const idSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/)
 const documentSchema = z.record(z.string(), z.unknown())
+const medicalDocumentCategorySchema = z.enum([
+  'Blood Test',
+  'Urine Test',
+  'X-ray',
+  'MRI',
+  'CT Scan',
+  'ECG',
+  'Ultrasound',
+  'Prescription',
+  'Other Medical Reports',
+])
+const medicalDocumentTypeByExtension = {
+  pdf: { contentType: 'application/pdf', extension: 'pdf' },
+  jpg: { contentType: 'image/jpeg', extension: 'jpg' },
+  jpeg: { contentType: 'image/jpeg', extension: 'jpg' },
+  png: { contentType: 'image/png', extension: 'png' },
+} as const
 const allowedHospitals = new Set(['central-city-hospital', 'riverside-general', 'northside-medical-center'])
 const allowedDepartments = new Set(['General medicine', 'Pediatrics', 'Dental care', 'Diagnostics'])
+
+function sniffMedicalDocumentType(buffer: Buffer) {
+  if (buffer.subarray(0, 1024).includes(Buffer.from('%PDF-'))) return 'application/pdf'
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg'
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png'
+  return null
+}
 
 app.use(cookieParser())
 app.use(express.json({ limit: '1mb' }))
@@ -132,23 +167,29 @@ app.post('/api/auth/link', authenticationLimit, requireAuth, asyncRoute(async (r
   response.json({ user })
 }))
 
-app.post('/api/files', requireAuth, writeLimit, pdfUpload.single('file'), asyncRoute(async (request, response) => {
+app.post('/api/files', requireAuth, writeLimit, medicalDocumentUpload.single('file'), asyncRoute(async (request, response) => {
   const parsed = z.object({
     hospitalId: z.string().refine((value) => allowedHospitals.has(value)),
     patientId: idSchema,
     recordId: idSchema,
+    category: medicalDocumentCategorySchema,
+    description: z.string().trim().max(500).default(''),
   }).safeParse(request.body)
   if (!parsed.success || !request.file) {
-    response.status(400).json({ error: 'Choose a PDF file and provide its patient record details.' })
+    response.status(400).json({ error: 'Choose a supported medical document and provide its category and patient record details.' })
     return
   }
-  const { hospitalId, patientId, recordId } = parsed.data
+  const { hospitalId, patientId, recordId, category, description } = parsed.data
   if (!request.user || request.user.role === 'patient' || request.user.hospitalId !== hospitalId) {
     response.status(403).json({ error: 'This hospital is outside your access.' })
     return
   }
-  if (request.file.mimetype !== 'application/pdf' || request.file.buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {
-    response.status(400).json({ error: 'Only valid PDF files can be uploaded.' })
+  const extension = request.file.originalname.toLowerCase().split('.').pop() ?? ''
+  const expectedType = medicalDocumentTypeByExtension[extension as keyof typeof medicalDocumentTypeByExtension]
+  const detectedContentType = sniffMedicalDocumentType(request.file.buffer)
+  if (!expectedType || detectedContentType !== expectedType.contentType
+    || (request.file.mimetype !== expectedType.contentType && request.file.mimetype !== 'application/octet-stream')) {
+    response.status(400).json({ error: 'Only valid PDF, JPG, JPEG, or PNG files can be uploaded.' })
     return
   }
   const record = readDocument('records', recordId)
@@ -164,32 +205,40 @@ app.post('/api/files', requireAuth, writeLimit, pdfUpload.single('file'), asyncR
     response.status(403).json({ error: 'The patient has withdrawn consent for additional record attachments.' })
     return
   }
-  const randomName = `${recordId}-${randomUUID()}.pdf`
+  const randomName = `${recordId}-${randomUUID()}.${expectedType.extension}`
   const relativePath = `records/${hospitalId}/${patientId}/${randomName}`
   const root = dataDirectory
   const absolutePath = resolve(root, relativePath)
   if (!absolutePath.startsWith(`${root}${sep}`)) {
-    response.status(400).json({ error: 'Invalid PDF destination.' })
+    response.status(400).json({ error: 'Invalid medical document destination.' })
     return
   }
   await mkdir(resolve(root, 'records', hospitalId, patientId), { recursive: true })
   await writeFile(absolutePath, request.file.buffer, { flag: 'wx', mode: 0o600 })
+  const originalName = request.file.originalname.split(/[\\/]/).pop()
   const entry = {
-    name: request.file.originalname.slice(0, 180),
+    id: randomUUID(),
+    patientId,
+    name: (originalName ?? '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 180) || 'medical-document',
     path: relativePath,
+    contentType: expectedType.contentType,
+    category,
+    description,
+    uploadedByUserId: request.user.uid,
+    uploaderRole: request.user.role,
     uploadedAt: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 },
   }
   const files = Array.isArray(record.pdfFiles) ? record.pdfFiles : []
   writeDocument('records', recordId, { ...record, pdfFiles: [...files, entry], updatedAt: entry.uploadedAt })
-  writeAudit(request.user, 'pdf-upload', 'records', hospitalId)
+  writeAudit(request.user, 'medical-document-upload', 'records', hospitalId)
   response.status(201).json(entry)
 }))
 
 app.get('/api/files', requireAuth, asyncRoute(async (request, response) => {
   const requestedPath = z.string().min(1).max(1024).parse(request.query.path)
   const parts = requestedPath.split('/')
-  if (parts.length !== 4 || parts[0] !== 'records' || !/^[A-Za-z0-9_-]+\.pdf$/.test(parts[3])) {
-    response.status(400).json({ error: 'Invalid PDF path.' })
+  if (parts.length !== 4 || parts[0] !== 'records' || !/^[A-Za-z0-9_-]+\.(pdf|jpg|png)$/.test(parts[3])) {
+    response.status(400).json({ error: 'Invalid medical document path.' })
     return
   }
   const [, hospitalId, patientId] = parts
@@ -202,17 +251,18 @@ app.get('/api/files', requireAuth, asyncRoute(async (request, response) => {
       && Array.isArray(data.pdfFiles) && data.pdfFiles.some((file) => file && typeof file === 'object' && (file as RowData).path === requestedPath),
   )
   if (!matched || !canRead(request, 'records', matched.id, matched.data)) {
-    response.status(403).json({ error: 'You do not have permission to access this PDF.' })
+    response.status(403).json({ error: 'You do not have permission to access this medical document.' })
     return
   }
   const root = dataDirectory
   const absolutePath = resolve(root, requestedPath)
   if (!absolutePath.startsWith(`${root}${sep}`)) {
-    response.status(400).json({ error: 'Invalid PDF path.' })
+    response.status(400).json({ error: 'Invalid medical document path.' })
     return
   }
   const file = await readFile(absolutePath)
-  response.type('application/pdf')
+  const extension = parts[3].split('.').pop() as keyof typeof medicalDocumentTypeByExtension
+  response.setHeader('Content-Type', medicalDocumentTypeByExtension[extension].contentType)
   response.setHeader('Content-Disposition', `inline; filename="${parts[3].replace(/["\\\r\n]/g, '_')}"`)
   response.send(file)
 }))
@@ -871,7 +921,7 @@ app.use((error: unknown, _request: Request, response: Response, next: express.Ne
   if (response.headersSent) return next(error)
   if (error instanceof multer.MulterError) {
     response.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400)
-      .json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'PDF files must be no larger than 10 MB.' : 'Invalid PDF upload.' })
+      .json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'Medical documents must be no larger than 10 MB.' : 'Invalid medical document upload.' })
     return
   }
   if (error instanceof z.ZodError) {

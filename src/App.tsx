@@ -49,6 +49,7 @@ import {
   queuePatientMessage,
   submitPrivacyRequest,
   withdrawRecordsConsent,
+  type MedicalDocumentCategory,
   type User,
 } from './localBackend'
 import {
@@ -103,6 +104,17 @@ const departments = [
   { name: 'Diagnostics', detail: 'Tests & imaging', icon: Activity, color: 'blue' },
 ] as const
 const medicalPdfUploadsEnabled = true
+const medicalDocumentCategories = [
+  'Blood Test',
+  'Urine Test',
+  'X-ray',
+  'MRI',
+  'CT Scan',
+  'ECG',
+  'Ultrasound',
+  'Prescription',
+  'Other Medical Reports',
+] as const satisfies readonly MedicalDocumentCategory[]
 
 const hospitals = [
   { id: 'central-city-hospital', name: 'Central City Hospital', address: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_ADDRESS ?? '', phone: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_PHONE ?? '', whatsapp: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_WHATSAPP ?? '', mapLink: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_MAP_LINK ?? '' },
@@ -124,18 +136,11 @@ type Ticket = {
   createdAt: { seconds: number } | null
 }
 type PatientDetails = {
-  firstName: string
-  middleName: string
-  lastName: string
-  dateOfBirth: string
-  gender: string
-  maritalStatus: string
-  preferredLanguage: string
-  permanentAddress: string
-  currentAddress: string
+  name: string
   mobileNumber: string
-  alternativeContactNumber: string
-  emailAddress: string
+  firstName?: string
+  middleName?: string
+  lastName?: string
 }
 type AppointmentStatus = 'pending' | 'confirmed' | 'rescheduled' | 'declined' | 'cancelled' | 'completed' | 'no_show'
 type Appointment = {
@@ -200,7 +205,17 @@ type AppointmentSlot = {
   capacity: number
   booked: number
 }
-type PdfFile = { name: string; path: string; uploadedAt: Timestamp }
+type MedicalDocument = {
+  id?: string
+  name: string
+  path: string
+  uploadedAt: Timestamp
+  contentType?: string
+  category?: MedicalDocumentCategory
+  description?: string
+  uploadedByUserId?: string
+  uploaderRole?: StaffRole
+}
 type MedicalRecord = {
   id: string
   patientId: string
@@ -215,7 +230,7 @@ type MedicalRecord = {
   prescription: string
   notes: string
   followUpDate: string
-  pdfFiles: PdfFile[]
+  pdfFiles: MedicalDocument[]
   consentAt: Timestamp | null
   createdBy: string
   createdAt: Timestamp | null
@@ -231,24 +246,16 @@ function getLocalDateInputValue() {
   return `${date.getFullYear()}-${month}-${day}`
 }
 
-function calculateAge(dateOfBirth: string) {
-  if (!dateOfBirth) return null
-  const [year, month, day] = dateOfBirth.split('-').map(Number)
-  const today = new Date()
-  const age = today.getFullYear() - year - (
-    today.getMonth() + 1 < month || (today.getMonth() + 1 === month && today.getDate() < day) ? 1 : 0
-  )
-  return age >= 0 ? age : null
-}
-
 function isPatientDetails(value: unknown): value is PatientDetails {
   if (typeof value !== 'object' || value === null) return false
-  const fields: (keyof PatientDetails)[] = [
-    'firstName', 'middleName', 'lastName', 'dateOfBirth', 'gender', 'maritalStatus',
-    'preferredLanguage', 'permanentAddress', 'currentAddress', 'mobileNumber',
-    'alternativeContactNumber', 'emailAddress',
-  ]
-  return fields.every((field) => field in value && typeof Reflect.get(value, field) === 'string')
+  const name = Reflect.get(value, 'name')
+  const firstName = Reflect.get(value, 'firstName')
+  return typeof Reflect.get(value, 'mobileNumber') === 'string'
+    && (typeof name === 'string' || typeof firstName === 'string')
+}
+
+function patientFullName(details: PatientDetails) {
+  return (details.name || [details.firstName, details.middleName, details.lastName].filter(Boolean).join(' ')).trim()
 }
 
 function getHospital(hospitalId: unknown): Hospital | undefined {
@@ -296,13 +303,27 @@ function getSlot(snapshot: QueryDocumentSnapshot<DocumentData>): AppointmentSlot
 
 function toMedicalRecord(id: string, data: DocumentData): MedicalRecord {
     const pdfFiles = Array.isArray(data.pdfFiles)
-      ? data.pdfFiles.flatMap((file): PdfFile[] => {
+      ? data.pdfFiles.flatMap((file): MedicalDocument[] => {
         if (typeof file !== 'object' || file === null) return []
         const name = Reflect.get(file, 'name')
         const path = Reflect.get(file, 'path')
         const uploadedAt = Reflect.get(file, 'uploadedAt')
         return typeof name === 'string' && typeof path === 'string' && uploadedAt instanceof Timestamp
-          ? [{ name, path, uploadedAt }]
+          ? [{
+            id: typeof Reflect.get(file, 'id') === 'string' ? Reflect.get(file, 'id') as string : undefined,
+            name,
+            path,
+            uploadedAt,
+            contentType: typeof Reflect.get(file, 'contentType') === 'string' ? Reflect.get(file, 'contentType') as string : undefined,
+            category: medicalDocumentCategories.includes(Reflect.get(file, 'category') as MedicalDocumentCategory)
+              ? Reflect.get(file, 'category') as MedicalDocumentCategory
+              : undefined,
+            description: typeof Reflect.get(file, 'description') === 'string' ? Reflect.get(file, 'description') as string : undefined,
+            uploadedByUserId: typeof Reflect.get(file, 'uploadedByUserId') === 'string' ? Reflect.get(file, 'uploadedByUserId') as string : undefined,
+            uploaderRole: ['receptionist', 'doctor', 'admin'].includes(String(Reflect.get(file, 'uploaderRole')))
+              ? Reflect.get(file, 'uploaderRole') as StaffRole
+              : undefined,
+          }]
           : []
       })
       : []
@@ -328,10 +349,19 @@ function toMedicalRecord(id: string, data: DocumentData): MedicalRecord {
     }
 }
 
-function validatePdfFiles(files: File[]) {
+function medicalDocumentContentType(fileName: string) {
+  const extension = fileName.toLowerCase().split('.').pop()
+  if (extension === 'pdf') return 'application/pdf'
+  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg'
+  if (extension === 'png') return 'image/png'
+  return null
+}
+
+function validateMedicalDocuments(files: File[]) {
     for (const file of files) {
-      if (file.type !== 'application/pdf' || !file.name.toLowerCase().endsWith('.pdf')) {
-        throw new Error(`${file.name} is not a PDF file.`)
+      const expectedContentType = medicalDocumentContentType(file.name)
+      if (!expectedContentType || (file.type && file.type !== expectedContentType)) {
+        throw new Error(`${file.name} must be a PDF, JPG, JPEG, or PNG file.`)
       }
       if (file.size === 0 || file.size > 10 * 1024 * 1024) {
         throw new Error(`${file.name} must be no larger than 10 MB.`)
@@ -339,24 +369,49 @@ function validatePdfFiles(files: File[]) {
     }
 }
 
-function safePdfFilename(fileName: string) {
-    const baseName = fileName.split(/[\\/]/).pop() ?? 'document.pdf'
-    const stem = baseName.replace(/\.pdf$/i, '').normalize('NFKD')
-      .replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80)
-    return `${Date.now()}-${stem || 'document'}.pdf`
+function hasValidMedicalDocumentSignature(contentType: string, bytes: Uint8Array) {
+    if (contentType === 'application/pdf') {
+      return new TextDecoder('ascii').decode(bytes).includes('%PDF-')
+    }
+    if (contentType === 'image/jpeg') return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+    if (contentType === 'image/png') {
+      return [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((byte, index) => bytes[index] === byte)
+    }
+    return false
 }
 
-async function uploadPdfFile(file: File, hospitalId: string, patientId: string, recordId: string, onProgress: (progress: number) => void): Promise<PdfFile> {
+async function uploadMedicalDocument(
+  file: File,
+  hospitalId: string,
+  patientId: string,
+  recordId: string,
+  category: MedicalDocumentCategory,
+  description: string,
+  onProgress: (progress: number) => void,
+): Promise<MedicalDocument> {
     if (!storage) throw new Error('The local CareFlow file service is unavailable.')
-    validatePdfFiles([file])
-    const header = new TextDecoder('ascii').decode(await file.slice(0, 1024).arrayBuffer())
-    if (!header.includes('%PDF-')) throw new Error(`${file.name} does not contain a valid PDF header.`)
-    const path = `records/${hospitalId}/${patientId}/${recordId}-${safePdfFilename(file.name)}`
+    validateMedicalDocuments([file])
+    const contentType = medicalDocumentContentType(file.name)
+    if (!contentType || !hasValidMedicalDocumentSignature(contentType, new Uint8Array(await file.slice(0, 1024).arrayBuffer()))) {
+      throw new Error(`${file.name} does not contain a valid ${contentType === 'application/pdf' ? 'PDF' : contentType === 'image/jpeg' ? 'JPEG' : 'PNG'} file signature.`)
+    }
+    const extension = contentType === 'application/pdf' ? 'pdf' : contentType === 'image/jpeg' ? 'jpg' : 'png'
+    const path = `records/${hospitalId}/${patientId}/${recordId}.${extension}`
     const task = uploadBytesResumable(storageRef(storage, path), file, {
-      contentType: 'application/pdf',
-      customMetadata: { recordId },
+      contentType,
+      customMetadata: { recordId, category, description: description.trim() },
     })
-    let uploadedFile: { path: string; uploadedAt: { seconds: number; nanoseconds: number } } | undefined
+    let uploadedFile: {
+      id: string
+      name: string
+      path: string
+      uploadedAt: { seconds: number; nanoseconds: number }
+      contentType: string
+      category: MedicalDocumentCategory
+      description: string
+      uploadedByUserId: string
+      uploaderRole: StaffRole
+    } | undefined
     await new Promise<void>((resolve, reject) => {
       task.on('state_changed',
         (snapshot) => onProgress(snapshot.totalBytes === 0 ? 0 : Math.round(snapshot.bytesTransferred / snapshot.totalBytes * 100)),
@@ -367,8 +422,8 @@ async function uploadPdfFile(file: File, hospitalId: string, patientId: string, 
         },
       )
     })
-    if (!uploadedFile) throw new Error('The local server did not confirm the uploaded PDF.')
-    return { name: file.name, path: uploadedFile.path, uploadedAt: new Timestamp(uploadedFile.uploadedAt.seconds, uploadedFile.uploadedAt.nanoseconds) }
+    if (!uploadedFile) throw new Error('The local server did not confirm the uploaded medical document.')
+    return { ...uploadedFile, uploadedAt: new Timestamp(uploadedFile.uploadedAt.seconds, uploadedFile.uploadedAt.nanoseconds) }
 }
 
 const statusLabels: Record<TicketStatus, string> = {
@@ -498,7 +553,9 @@ export default function App() {
       setStaffHospital(assignedHospital)
       setAuthReady(true)
       setView((currentView) => staffAccount
-        ? currentView === 'staff-inbox' ? currentView : 'staff'
+        ? new URLSearchParams(window.location.search).has('ticket')
+          ? 'patient'
+          : currentView === 'staff-inbox' ? currentView : 'staff'
         : currentView === 'staff' || currentView === 'staff-inbox' ? 'patient' : currentView)
     })
   }, [])
@@ -662,9 +719,9 @@ export default function App() {
         <div className="topbar-inner">
           <Brand onClick={() => { clearTicket(); setView('patient') }} />
           <nav className="top-nav" aria-label="Main navigation">
-            {staffReady && view.startsWith('staff') ? (
+            {staffReady && (view.startsWith('staff') || activeTicket) ? (
               <>
-                <span className="staff-identity"><span className="online-dot" /> {view === 'staff-inbox' ? 'Request inbox' : view === 'staff-today' ? 'My patients today' : view === 'staff-history' ? 'Patient history' : view === 'staff-search' ? 'Patient search' : view === 'staff-privacy' ? 'Privacy requests' : view === 'staff-notifications' ? 'Patient messages' : 'Staff dashboard'}</span>
+                <span className="staff-identity"><span className="online-dot" /> {activeTicket && !view.startsWith('staff') ? 'Patient QR details' : view === 'staff-inbox' ? 'Request inbox' : view === 'staff-today' ? 'My patients today' : view === 'staff-history' ? 'Patient history' : view === 'staff-search' ? 'Patient search' : view === 'staff-privacy' ? 'Privacy requests' : view === 'staff-notifications' ? 'Patient messages' : 'Staff dashboard'}</span>
                 <button className="nav-login" onClick={logout}><LogOut size={15} /> Sign out</button>
               </>
             ) : patientAccount ? (
@@ -761,7 +818,15 @@ export default function App() {
       ) : view === 'patient-records' ? (
         <PatientHistoryPage patient={user ? { id: user.uid, details: emptyPatientDetails(), mobileNumber: '' } : null} hospital={null} role={null} patientView onBack={() => setView('patient')} onError={setError} />
       ) : activeTicket ? (
-        <TicketTracking ticket={ticket} missing={ticketMissing} error={ticketError} onBack={clearTicket} />
+        <TicketTracking
+          ticket={ticket}
+          missing={ticketMissing}
+          error={ticketError}
+          isStaff={staffReady}
+          staffHospital={staffHospital}
+          onStaffLogin={() => { setError(''); setView('staff') }}
+          onBack={clearTicket}
+        />
       ) : (
         <PatientHome
           onTicketCreated={showTicket}
@@ -820,20 +885,7 @@ function PatientHome({
   const [showDepartments, setShowDepartments] = useState(false)
   const [lookup, setLookup] = useState('')
   const [consentGiven, setConsentGiven] = useState(false)
-  const [patientDetails, setPatientDetails] = useState<PatientDetails>({
-    firstName: '',
-    middleName: '',
-    lastName: '',
-    dateOfBirth: '',
-    gender: '',
-    maritalStatus: '',
-    preferredLanguage: '',
-    permanentAddress: '',
-    currentAddress: '',
-    mobileNumber: '',
-    alternativeContactNumber: '',
-    emailAddress: '',
-  })
+  const [patientDetails, setPatientDetails] = useState<PatientDetails>(emptyPatientDetails)
   const selectedDepartment = departments.find((item) => item.name === selected) ?? departments[0]
   const SelectedIcon = selectedDepartment.icon
   const checkInUrl = new URL(window.location.href)
@@ -859,34 +911,9 @@ function PatientHome({
       onError('The local CareFlow server is not available. Start it with `npm run start`, then try again.')
       return
     }
-    const detailsToSave: PatientDetails = {
-      firstName: patientDetails.firstName.trim(),
-      middleName: patientDetails.middleName.trim(),
-      lastName: patientDetails.lastName.trim(),
-      dateOfBirth: patientDetails.dateOfBirth,
-      gender: patientDetails.gender,
-      maritalStatus: patientDetails.maritalStatus,
-      preferredLanguage: patientDetails.preferredLanguage.trim(),
-      permanentAddress: patientDetails.permanentAddress.trim(),
-      currentAddress: patientDetails.currentAddress.trim(),
-      mobileNumber: patientDetails.mobileNumber.trim(),
-      alternativeContactNumber: patientDetails.alternativeContactNumber.trim(),
-      emailAddress: patientDetails.emailAddress.trim(),
-    }
-    const requiredDetails = [
-      detailsToSave.firstName,
-      detailsToSave.lastName,
-      detailsToSave.dateOfBirth,
-      detailsToSave.gender,
-      detailsToSave.maritalStatus,
-      detailsToSave.preferredLanguage,
-      detailsToSave.permanentAddress,
-      detailsToSave.currentAddress,
-      detailsToSave.mobileNumber,
-      detailsToSave.emailAddress,
-    ]
-    if (!consentGiven || requiredDetails.some((value) => !value) || calculateAge(detailsToSave.dateOfBirth) === null) {
-      onError('Complete all required patient details, enter a valid date of birth, and agree to share the information with your selected hospital.')
+    const detailsToSave = normalizePatientDetails(patientDetails)
+    if (!consentGiven || !hasRequiredPatientDetails(detailsToSave)) {
+      onError('Enter your name and mobile number, then agree to share these details with your selected hospital.')
       return
     }
     setCreating(true)
@@ -1029,7 +1056,7 @@ function PatientHome({
             })}</div>}
             <div className="checkin-divider" />
             <div className="step-label"><span>03</span> {t('PATIENT DETAILS')}</div>
-            <p className="checkin-description">{t('Enter your details for the care team. Age is calculated from your date of birth.')}</p>
+            <p className="checkin-description">{t('Enter your name and mobile number so the care team can identify and contact you.')}</p>
             <form className="patient-details-form" onSubmit={checkIn}>
               <PatientDetailsFields patientDetails={patientDetails} updatePatientDetails={updatePatientDetails} />
               <label className="patient-consent">
@@ -1084,49 +1111,20 @@ function PatientHome({
 
 function emptyPatientDetails(): PatientDetails {
   return {
-    firstName: '',
-    middleName: '',
-    lastName: '',
-    dateOfBirth: '',
-    gender: '',
-    maritalStatus: '',
-    preferredLanguage: '',
-    permanentAddress: '',
-    currentAddress: '',
+    name: '',
     mobileNumber: '',
-    alternativeContactNumber: '',
-    emailAddress: '',
   }
 }
 
 function normalizePatientDetails(details: PatientDetails): PatientDetails {
   return {
-    ...details,
-    firstName: details.firstName.trim(),
-    middleName: details.middleName.trim(),
-    lastName: details.lastName.trim(),
-    preferredLanguage: details.preferredLanguage.trim(),
-    permanentAddress: details.permanentAddress.trim(),
-    currentAddress: details.currentAddress.trim(),
+    name: patientFullName(details),
     mobileNumber: details.mobileNumber.trim(),
-    alternativeContactNumber: details.alternativeContactNumber.trim(),
-    emailAddress: details.emailAddress.trim(),
   }
 }
 
 function hasRequiredPatientDetails(details: PatientDetails) {
-  return [
-    details.firstName,
-    details.lastName,
-    details.dateOfBirth,
-    details.gender,
-    details.maritalStatus,
-    details.preferredLanguage,
-    details.permanentAddress,
-    details.currentAddress,
-    details.mobileNumber,
-    details.emailAddress,
-  ].every(Boolean) && calculateAge(details.dateOfBirth) !== null
+  return Boolean(details.name && details.mobileNumber)
 }
 
 function PatientDetailsFields({
@@ -1139,29 +1137,8 @@ function PatientDetailsFields({
   const t = usePatientText()
   return (
     <div className="patient-details-grid">
-      <label className="patient-field">{t('First name')}<input required autoComplete="given-name" maxLength={100} value={patientDetails.firstName} onChange={(event) => updatePatientDetails('firstName', event.target.value)} /></label>
-      <label className="patient-field">{t('Middle name')} <span>({t('optional')})</span><input autoComplete="additional-name" maxLength={100} value={patientDetails.middleName} onChange={(event) => updatePatientDetails('middleName', event.target.value)} /></label>
-      <label className="patient-field">{t('Last name')}<input required autoComplete="family-name" maxLength={100} value={patientDetails.lastName} onChange={(event) => updatePatientDetails('lastName', event.target.value)} /></label>
-      <label className="patient-field">{t('Date of birth')}
-        <input required type="date" max={getLocalDateInputValue()} autoComplete="bday" value={patientDetails.dateOfBirth} onChange={(event) => updatePatientDetails('dateOfBirth', event.target.value)} />
-        {patientDetails.dateOfBirth && <small>{calculateAge(patientDetails.dateOfBirth) ?? t('Enter a valid date')} {t('years old')}</small>}
-      </label>
-      <label className="patient-field">{t('Gender')}
-        <select required value={patientDetails.gender} onChange={(event) => updatePatientDetails('gender', event.target.value)}>
-          <option value="">{t('Select')}</option><option>Female</option><option>Male</option><option>Non-binary</option><option>Other</option><option>Prefer not to say</option>
-        </select>
-      </label>
-      <label className="patient-field">{t('Marital status')}
-        <select required value={patientDetails.maritalStatus} onChange={(event) => updatePatientDetails('maritalStatus', event.target.value)}>
-          <option value="">{t('Select')}</option><option>Single</option><option>Married</option><option>Separated</option><option>Divorced</option><option>Widowed</option><option>Prefer not to say</option>
-        </select>
-      </label>
-      <label className="patient-field">{t('Preferred language')}<input required maxLength={80} value={patientDetails.preferredLanguage} onChange={(event) => updatePatientDetails('preferredLanguage', event.target.value)} /></label>
+      <label className="patient-field">{t('Full name')}<input required autoComplete="name" maxLength={200} value={patientDetails.name} onChange={(event) => updatePatientDetails('name', event.target.value)} /></label>
       <label className="patient-field">{t('Mobile number')}<input required type="tel" autoComplete="tel" maxLength={24} value={patientDetails.mobileNumber} onChange={(event) => updatePatientDetails('mobileNumber', event.target.value)} /></label>
-      <label className="patient-field">{t('Alternative contact')} <span>({t('optional')})</span><input type="tel" maxLength={24} value={patientDetails.alternativeContactNumber} onChange={(event) => updatePatientDetails('alternativeContactNumber', event.target.value)} /></label>
-      <label className="patient-field">{t('Email address')}<input required type="email" autoComplete="email" maxLength={254} value={patientDetails.emailAddress} onChange={(event) => updatePatientDetails('emailAddress', event.target.value)} /></label>
-      <label className="patient-field patient-field-wide">{t('Permanent address')}<textarea required autoComplete="street-address" maxLength={500} rows={2} value={patientDetails.permanentAddress} onChange={(event) => updatePatientDetails('permanentAddress', event.target.value)} /></label>
-      <label className="patient-field patient-field-wide">{t('Current address')}<textarea required maxLength={500} rows={2} value={patientDetails.currentAddress} onChange={(event) => updatePatientDetails('currentAddress', event.target.value)} /></label>
     </div>
   )
 }
@@ -1383,7 +1360,7 @@ function AppointmentRequestPage({ onBack, onError, onSubmitted }: { onBack: () =
           </div>}
           <div className="checkin-divider" />
           <h2 className="appointment-subheading">{t('Patient details')}</h2>
-          <p className="checkin-description">{t('These details create your permanent patient profile and help the hospital contact you.')}</p>
+          <p className="checkin-description">{t('Your name and mobile number create your patient profile and help the hospital contact you.')}</p>
           <PatientDetailsFields patientDetails={patientDetails} updatePatientDetails={updatePatientDetails} />
           <label className="patient-consent"><input type="checkbox" required checked={consentGiven} onChange={(event) => setConsentGiven(event.target.checked)} /><span>{t('I consent to sharing my patient details and appointment request with the selected hospital.')}</span></label>
           <label className="patient-consent"><input type="checkbox" required checked={recordsConsentGiven} onChange={(event) => setRecordsConsentGiven(event.target.checked)} /><span>{t('I agree to my medical records being stored securely and shared with my care team.')}</span></label>
@@ -1690,7 +1667,7 @@ function PatientHistoryPage({ patient, hospital, role, patientView, onBack, onEr
     setPrivacyBusy(true)
     try {
       await withdrawRecordsConsent()
-      setPrivacyMessage('Consent withdrawn. Existing records remain available where legally required; new PDF attachments are blocked.')
+      setPrivacyMessage('Consent withdrawn. Existing records remain available where legally required; new medical document attachments are blocked.')
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : 'Unable to withdraw records consent.')
     } finally {
@@ -1743,7 +1720,7 @@ function PatientHistoryPage({ patient, hospital, role, patientView, onBack, onEr
     <main className={patientView ? 'appointment-page patient-history-page' : 'dashboard-page staff-tool-page'}>
       <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> {patientView ? 'Back to CareFlow' : 'Back to patient search'}</button>
       <div className="appointment-page-heading"><div className="eyebrow"><span className="eyebrow-line" /> {patientView ? 'MY RECORDS' : 'PRIVATE PATIENT HISTORY'}</div><h1>{patientView ? 'Your visit history.' : 'Patient history.'}</h1>
-        <p>{patientView ? 'Your visit records and uploaded documents are available here.' : patient ? `${[patient.details.firstName, patient.details.middleName, patient.details.lastName].filter(Boolean).join(' ')} · ${patient.mobileNumber}` : 'Patient history'}</p>
+        <p>{patientView ? 'Your visit records and uploaded documents are available here.' : patient ? `${patientFullName(patient.details)} · ${patient.mobileNumber}` : 'Patient history'}</p>
       </div>
       {!patient && <div className="appointment-empty"><span className="empty-icon"><ClipboardList size={21} /></span><strong>Sign in to view your records</strong><p>Open My Records from the patient page to access records linked to your account.</p></div>}
       {patient && <>
@@ -1792,11 +1769,11 @@ function MedicalRecordCard({ record, children, onError }: { record: MedicalRecor
   </article>
 }
 
-function RecordPdfList({ files, onError }: { files: PdfFile[]; onError: (message: string) => void }) {
+function RecordPdfList({ files, onError }: { files: MedicalDocument[]; onError: (message: string) => void }) {
   return medicalPdfUploadsEnabled && files.length > 0 ? <div className="record-pdf-list"><strong><FileText size={15} /> Reports and prescriptions</strong>{files.map((file) => <PrivatePdfActions file={file} key={file.path} onError={onError} />)}</div> : null
 }
 
-function PrivatePdfActions({ file, onError }: { file: PdfFile; onError: (message: string) => void }) {
+function PrivatePdfActions({ file, onError }: { file: MedicalDocument; onError: (message: string) => void }) {
   const [url, setUrl] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -1813,20 +1790,27 @@ function PrivatePdfActions({ file, onError }: { file: PdfFile; onError: (message
       setUrl(URL.createObjectURL(blob))
     } catch (reason) {
       onError(reason instanceof Error
-        ? `Unable to access this private PDF. Check Storage access and bucket CORS configuration: ${reason.message}`
-        : 'Unable to access this private PDF.')
+        ? `Unable to access this private medical document: ${reason.message}`
+        : 'Unable to access this private medical document.')
     } finally {
       setLoading(false)
     }
   }
 
-  return <div className="record-pdf-item"><FileText size={15} /><span>{file.name}</span>{url
+  const uploaderLabel = file.uploaderRole ? `${file.uploaderRole[0].toUpperCase()}${file.uploaderRole.slice(1)}` : ''
+  return <div className="record-pdf-item"><FileText size={15} /><span>
+    <strong>{file.name}</strong>
+    <small>{[file.category ?? 'Uncategorized', file.uploadedAt.toDate().toLocaleDateString(), uploaderLabel && `Uploaded by ${uploaderLabel}`].filter(Boolean).join(' · ')}</small>
+    {file.description && <small>{file.description}</small>}
+  </span>{url
     ? <><a href={url} target="_blank" rel="noreferrer">View</a><a href={url} download={file.name}>Download</a></>
     : <button className="queue-action" onClick={() => void prepare()} disabled={loading}>{loading ? 'Loading…' : 'Open securely'}</button>}</div>
 }
 
 function MedicalRecordPdfUpload({ record, hospital, patient, onError }: { record: MedicalRecord; hospital: Hospital; patient: SelectedPatient; onError: (message: string) => void }) {
   const [files, setFiles] = useState<File[]>([])
+  const [category, setCategory] = useState<MedicalDocumentCategory>('Other Medical Reports')
+  const [description, setDescription] = useState('')
   const [progress, setProgress] = useState(0)
   const [saving, setSaving] = useState(false)
 
@@ -1834,30 +1818,33 @@ function MedicalRecordPdfUpload({ record, hospital, patient, onError }: { record
     event.preventDefault()
     if (!db || !files.length) return
     try {
-      validatePdfFiles(files)
-      if (record.pdfFiles.length + files.length > 100) throw new Error('A visit record can contain at most 100 PDF files.')
+      validateMedicalDocuments(files)
+      if (record.pdfFiles.length + files.length > 100) throw new Error('A visit record can contain at most 100 medical documents.')
       setSaving(true)
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index]
-        const uploaded = await uploadPdfFile(file, hospital.id, patient.id, record.id, (value) => {
+        const uploaded = await uploadMedicalDocument(file, hospital.id, patient.id, record.id, category, description, (value) => {
           setProgress(Math.round((index + value / 100) / files.length * 100))
         })
         await updateDoc(doc(db, 'records', record.id), { pdfFiles: arrayUnion(uploaded), updatedAt: serverTimestamp() })
       }
       setFiles([])
+      setDescription('')
       setProgress(0)
       onError('')
     } catch (reason) {
-      onError(reason instanceof Error ? `Unable to attach PDF: ${reason.message}` : 'Unable to attach PDF.')
+      onError(reason instanceof Error ? `Unable to attach medical document: ${reason.message}` : 'Unable to attach medical document.')
     } finally {
       setSaving(false)
     }
   }
 
   return <form className="record-upload-form" onSubmit={(event) => void submit(event)}>
-    <label className="patient-field">Attach report or scan (PDF, up to 10 MB each)<input type="file" accept="application/pdf,.pdf" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /></label>
-    {saving && <progress max={100} value={progress} aria-label="PDF upload progress" />}
-    <button className="button button-outline" disabled={saving || files.length === 0}>{saving ? `Uploading ${progress}%…` : <>Upload PDF files <FileText size={15} /></>}</button>
+    <label className="patient-field">Attach report or scan (PDF, JPG, or PNG; up to 10 MB each)<input type="file" accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /></label>
+    <label className="patient-field">Document category<select value={category} onChange={(event) => setCategory(event.target.value as MedicalDocumentCategory)}>{medicalDocumentCategories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+    <label className="patient-field record-upload-description">Description (optional)<input maxLength={500} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+    {saving && <progress max={100} value={progress} aria-label="Medical document upload progress" />}
+    <button className="button button-outline" disabled={saving || files.length === 0}>{saving ? `Uploading ${progress}%…` : <>Upload documents <FileText size={15} /></>}</button>
   </form>
 }
 
@@ -1935,7 +1922,7 @@ function DoctorTodayPage({ hospital, userId, onBack, onError }: { hospital: Hosp
         : <div className="doctor-list">{ownAppointments.map(({ appointment, patient }) => {
           const doctor = doctors.find((item) => item.id === appointment.doctorId)
           return <article className="doctor-card doctor-today-card" key={appointment.id}>
-            <div className="doctor-card-summary"><span className="department-icon mint"><Users size={18} /></span><div><strong>{patient ? [patient.details.firstName, patient.details.middleName, patient.details.lastName].filter(Boolean).join(' ') : 'Patient details unavailable'}</strong><small>{appointment.assignedTime} · {appointment.department} · {doctor?.name ?? 'Assigned doctor'}</small></div><span className="ticket-status confirmed"><span />{appointment.status}</span></div>
+            <div className="doctor-card-summary"><span className="department-icon mint"><Users size={18} /></span><div><strong>{patient ? patientFullName(patient.details) : 'Patient details unavailable'}</strong><small>{appointment.assignedTime} · {appointment.department} · {doctor?.name ?? 'Assigned doctor'}</small></div><span className="ticket-status confirmed"><span />{appointment.status}</span></div>
             <dl className="request-details"><div><dt>Mobile</dt><dd>{patient?.mobileNumber ?? appointment.patientMobile}</dd></div><div><dt>Reason for visit</dt><dd>{appointment.reason}</dd></div><div><dt>Patient ID</dt><dd>{appointment.patientId}</dd></div></dl>
             <button className="button button-outline" onClick={() => void markNoShow(appointment)}>Mark no-show</button>
             {appointment.recordId && <p className="staff-note"><FileText size={15} /> A visit record has been started for this appointment. Continue below or return to patient history.</p>}
@@ -1971,9 +1958,11 @@ function DoctorVisitForm({ appointment, patient, hospital, doctor, onError, onDo
   const [notes, setNotes] = useState('')
   const [followUpDate, setFollowUpDate] = useState('')
   const [files, setFiles] = useState<File[]>([])
+  const [documentCategory, setDocumentCategory] = useState<MedicalDocumentCategory>('Other Medical Reports')
+  const [documentDescription, setDocumentDescription] = useState('')
   const [progress, setProgress] = useState(0)
   const [recordId, setRecordId] = useState(appointment.recordId)
-  const [existingPdfCount, setExistingPdfCount] = useState(0)
+  const [existingDocumentCount, setExistingDocumentCount] = useState(0)
   const [recordsConsentGiven, setRecordsConsentGiven] = useState(Boolean(appointment.recordsConsentAt))
   const [loadingRecord, setLoadingRecord] = useState(Boolean(appointment.recordId))
   const [saving, setSaving] = useState(false)
@@ -1988,7 +1977,7 @@ function DoctorVisitForm({ appointment, patient, hospital, doctor, onError, onDo
     void getDoc(doc(db, 'records', recordId)).then((snapshot) => {
       if (!active || !snapshot.exists()) return
       const record = toMedicalRecord(snapshot.id, snapshot.data())
-      setExistingPdfCount(record.pdfFiles.length)
+      setExistingDocumentCount(record.pdfFiles.length)
       setDiagnosis(record.diagnosis)
       setAllergies(record.allergies)
       setChronicConditions(record.chronicConditions)
@@ -2015,8 +2004,8 @@ function DoctorVisitForm({ appointment, patient, hospital, doctor, onError, onDo
       return
     }
     try {
-      validatePdfFiles(files)
-      if (existingPdfCount + files.length > 100) throw new Error('A visit record can contain at most 100 PDF files.')
+      validateMedicalDocuments(files)
+      if (existingDocumentCount + files.length > 100) throw new Error('A visit record can contain at most 100 medical documents.')
       setSaving(true)
       let activeRecordId = recordId
       if (!activeRecordId) {
@@ -2062,11 +2051,11 @@ function DoctorVisitForm({ appointment, patient, hospital, doctor, onError, onDo
       }
 
       for (let index = 0; index < files.length; index += 1) {
-        const uploaded = await uploadPdfFile(files[index], hospital.id, patient.id, activeRecordId, (value) => {
+        const uploaded = await uploadMedicalDocument(files[index], hospital.id, patient.id, activeRecordId, documentCategory, documentDescription, (value) => {
           setProgress(Math.round((index + value / 100) / Math.max(1, files.length) * 100))
         })
         await updateDoc(doc(db, 'records', activeRecordId), { pdfFiles: arrayUnion(uploaded), updatedAt: serverTimestamp() })
-        setExistingPdfCount((count) => count + 1)
+        setExistingDocumentCount((count) => count + 1)
       }
 
       const finish = writeBatch(db)
@@ -2083,7 +2072,7 @@ function DoctorVisitForm({ appointment, patient, hospital, doctor, onError, onDo
   }
 
   return <form className="visit-record-form" onSubmit={(event) => void submit(event)}>
-    <div className="record-form-heading"><h3>Add visit record</h3><span>{[patient.details.firstName, patient.details.lastName].join(' ')} · {appointment.assignedDate}</span></div>
+    <div className="record-form-heading"><h3>Add visit record</h3><span>{patientFullName(patient.details)} · {appointment.assignedDate}</span></div>
     <div className="record-form-grid">
       <label className="patient-field">Diagnosis<textarea required maxLength={5000} rows={3} value={diagnosis} onChange={(event) => setDiagnosis(event.target.value)} /></label>
       <label className="patient-field">Allergies<textarea maxLength={2000} rows={3} value={allergies} onChange={(event) => setAllergies(event.target.value)} placeholder="List known allergies, or enter none reported" /></label>
@@ -2092,15 +2081,62 @@ function DoctorVisitForm({ appointment, patient, hospital, doctor, onError, onDo
       <label className="patient-field">Prescription<textarea maxLength={5000} rows={3} value={prescription} onChange={(event) => setPrescription(event.target.value)} /></label>
       <label className="patient-field">Clinical notes<textarea maxLength={5000} rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} /></label>
       <label className="patient-field">Follow-up date<input type="date" min={appointment.assignedDate} value={followUpDate} onChange={(event) => setFollowUpDate(event.target.value)} /></label>
-      <label className="patient-field patient-field-wide">Attach PDFs (up to 10 MB each)<input type="file" accept="application/pdf,.pdf" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /></label>
+      <label className="patient-field patient-field-wide">Attach medical reports (PDF, JPG, or PNG; up to 10 MB each)<input type="file" accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /></label>
+      <label className="patient-field">Document category<select value={documentCategory} onChange={(event) => setDocumentCategory(event.target.value as MedicalDocumentCategory)}>{medicalDocumentCategories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+      <label className="patient-field">Document description (optional)<input maxLength={500} value={documentDescription} onChange={(event) => setDocumentDescription(event.target.value)} /></label>
     </div>
     <label className="patient-consent"><input type="checkbox" required checked={recordsConsentGiven} onChange={(event) => setRecordsConsentGiven(event.target.checked)} /><span>I agree to my records being stored. Confirm with the patient before saving.</span></label>
-    {saving && <progress max={100} value={progress} aria-label="PDF upload progress" />}
+    {saving && <progress max={100} value={progress} aria-label="Medical document upload progress" />}
     <button className="button button-dark" disabled={saving || loadingRecord}>{saving ? files.length ? `Saving and uploading ${progress}%…` : 'Saving record…' : loadingRecord ? 'Loading existing record…' : <>Save record and complete visit <Check size={15} /></>}</button>
   </form>
 }
 
-function TicketTracking({ ticket, missing, error, onBack }: { ticket: Ticket | null; missing: boolean; error: string; onBack: () => void }) {
+function TicketTracking({
+  ticket,
+  missing,
+  error,
+  isStaff,
+  staffHospital,
+  onStaffLogin,
+  onBack,
+}: {
+  ticket: Ticket | null
+  missing: boolean
+  error: string
+  isStaff: boolean
+  staffHospital: Hospital | null
+  onStaffLogin: () => void
+  onBack: () => void
+}) {
+  const [patientDetails, setPatientDetails] = useState<PatientDetails | null>(null)
+  const [detailsError, setDetailsError] = useState('')
+  const [loadingDetails, setLoadingDetails] = useState(false)
+
+  useEffect(() => {
+    setPatientDetails(null)
+    setDetailsError('')
+    if (!isStaff || !ticket || staffHospital?.id !== ticket.hospitalId || !db) {
+      setLoadingDetails(false)
+      return
+    }
+
+    let active = true
+    setLoadingDetails(true)
+    void getDoc(doc(db, 'patientDetails', ticket.id)).then((snapshot) => {
+      const data = snapshot.data()
+      if (!snapshot.exists() || !data || data.hospitalId !== ticket.hospitalId || !isPatientDetails(data.details)) {
+        throw new Error('No patient details are available for this ticket.')
+      }
+      if (active) setPatientDetails(data.details)
+    }).catch((reason: unknown) => {
+      if (active) setDetailsError(reason instanceof Error ? reason.message : 'Unable to load patient details.')
+    }).finally(() => {
+      if (active) setLoadingDetails(false)
+    })
+
+    return () => { active = false }
+  }, [ticket?.id, ticket?.hospitalId, isStaff, staffHospital?.id])
+
   if (error) return <main className="tracking-page"><button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to check-in</button><div className="tracking-card not-found"><span className="tracking-status-icon"><CircleHelp size={25} /></span><h1>We couldn’t load your ticket.</h1><p>{error.includes('permission') ? 'Ticket access was denied. Check that you are using the CareFlow server address and try again.' : `Please check your connection and try again. (${error})`}</p><button className="button button-dark" onClick={() => window.location.reload()}>Try again <ArrowRight size={16} /></button></div></main>
   if (missing) return <main className="tracking-page"><button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to check-in</button><div className="tracking-card not-found"><span className="tracking-status-icon"><CircleHelp size={25} /></span><h1>We couldn't find that ticket.</h1><p>Check the ticket ID in your QR link and try again.</p><button className="button button-dark" onClick={onBack}>Back to check-in <ArrowRight size={16} /></button></div></main>
   if (!ticket) return <main className="tracking-page"><div className="tracking-card loading-card"><span className="spinner dark-spinner" /><p>Loading your ticket…</p></div></main>
@@ -2122,12 +2158,32 @@ function TicketTracking({ ticket, missing, error, onBack }: { ticket: Ticket | n
             {called ? <Bell size={19} /> : completed ? <CheckCircle2 size={19} /> : <Clock3 size={19} />}
             <span><strong>{called ? 'It’s your turn — please come in.' : completed ? 'Your visit is complete. Take care!' : 'You’re in line. We’ll call you when it’s your turn.'}</strong><small>{called ? 'Please show your ticket to the care team.' : completed ? 'Thank you for visiting CareFlow.' : 'Keep this page open for live updates.'}</small></span>
           </div>
-          <div className="ticket-privacy"><ShieldCheck size={15} /> This ticket doesn’t contain personal health information.</div>
+          <div className="ticket-privacy"><ShieldCheck size={15} /> This unique QR contains only a ticket reference. Patient details are not encoded in the QR.</div>
+          {isStaff && staffHospital?.id === ticket.hospitalId ? (
+            <section className="ticket-patient-details">
+              <h2><ShieldCheck size={16} /> Patient details</h2>
+              {loadingDetails ? <p><span className="spinner dark-spinner" /> Loading private details…</p>
+                : detailsError ? <p role="alert">{detailsError}</p>
+                  : patientDetails ? <dl className="patient-details-list">
+                    <div><dt>Full name</dt><dd>{patientFullName(patientDetails)}</dd></div>
+                    <div><dt>Mobile number</dt><dd>{patientDetails.mobileNumber}</dd></div>
+                  </dl>
+                    : <p>Patient details are unavailable for this ticket.</p>}
+            </section>
+          ) : !isStaff ? (
+            <div className="ticket-details-access">
+              <p>Hospital staff can scan this QR and sign in to view your name and mobile number.</p>
+              <button className="button button-outline" onClick={onStaffLogin}>Staff sign in <ArrowRight size={15} /></button>
+            </div>
+          ) : (
+            <p className="ticket-details-access" role="status">Patient details are available only to staff assigned to this hospital.</p>
+          )}
         </section>
         <aside className="qr-ticket">
           <span className="qr-title"><QrCode size={16} /> SHOW THIS AT CHECK-IN</span>
           <div className="qr-paper"><QRCodeSVG value={url} size={172} bgColor="#ffffff" fgColor="#173c36" level="H" includeMargin /></div>
-          <strong>Scan to verify your place</strong>
+          <strong>Scan to view your ticket</strong>
+          <small>Authorized hospital staff can see your name and mobile number after signing in.</small>
           <span className="qr-code-label">{ticket.code}</span>
         </aside>
       </div>
@@ -2279,17 +2335,8 @@ function StaffLogin({ authReady, onBack, onError }: { authReady: boolean; onBack
 
 function PatientDetailsDialog({ ticket, details, onClose }: { ticket: Ticket; details: PatientDetails; onClose: () => void }) {
   const rows: [string, string][] = [
-    ['Full name', [details.firstName, details.middleName, details.lastName].filter(Boolean).join(' ')],
-    ['Date of birth', details.dateOfBirth],
-    ['Age', `${calculateAge(details.dateOfBirth) ?? '—'} years`],
-    ['Gender', details.gender],
-    ['Marital status', details.maritalStatus],
-    ['Preferred language', details.preferredLanguage],
+    ['Full name', patientFullName(details)],
     ['Mobile number', details.mobileNumber],
-    ['Alternative contact', details.alternativeContactNumber || 'Not provided'],
-    ['Email address', details.emailAddress],
-    ['Permanent address', details.permanentAddress],
-    ['Current address', details.currentAddress],
   ]
 
   return (
@@ -2492,16 +2539,13 @@ function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital 
           return (
             <article className={`request-card${request.urgent ? ' request-card-urgent' : ''}`} key={request.id}>
               <div className="request-card-heading">
-                <div><span className="appointment-status-pill pending">Pending</span>{request.urgent && <span className="urgent-label">Urgent</span>}<h2>{request.patient ? [request.patient.firstName, request.patient.middleName, request.patient.lastName].filter(Boolean).join(' ') : 'Patient details unavailable'}</h2><p>{request.patient?.mobileNumber ?? 'No mobile number'} · {request.department}</p></div>
+                  <div><span className="appointment-status-pill pending">Pending</span>{request.urgent && <span className="urgent-label">Urgent</span>}<h2>{request.patient ? patientFullName(request.patient) : 'Patient details unavailable'}</h2><p>{request.patient?.mobileNumber ?? 'No mobile number'} · {request.department}</p></div>
                 <span className="request-date">Preferred: {request.requestedDate}</span>
-              </div>
-              <dl className="request-details">
-                <div><dt>Reason for visit</dt><dd>{request.reason}</dd></div>
-                <div><dt>Date of birth</dt><dd>{request.patient?.dateOfBirth ?? '—'}</dd></div>
-                <div><dt>Preferred language</dt><dd>{request.patient?.preferredLanguage ?? '—'}</dd></div>
-                <div><dt>Companions</dt><dd>{request.companions}</dd></div>
-                <div><dt>Email</dt><dd>{request.patient?.emailAddress ?? '—'}</dd></div>
-              </dl>
+                </div>
+                <dl className="request-details">
+                  <div><dt>Reason for visit</dt><dd>{request.reason}</dd></div>
+                  <div><dt>Companions</dt><dd>{request.companions}</dd></div>
+                </dl>
               {canUpdate && <div className="request-actions">
                 <button className="button button-dark" onClick={() => startAction(request, 'confirmed')}>Confirm <Check size={15} /></button>
                 <button className="button button-outline" onClick={() => startAction(request, 'rescheduled')}>Suggest new time <CalendarDays size={15} /></button>
@@ -2782,7 +2826,7 @@ function PatientSearch({ hospital, onBack, onError, onOpenHistory }: { hospital:
     <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to queue dashboard</button>
     <div className="appointment-page-heading"><div className="eyebrow"><span className="eyebrow-line" /> PATIENT LOOKUP</div><h1>Patient search.</h1><p>Search patients who have previously contacted {hospital?.name ?? 'your hospital'} by mobile number or patient ID.</p></div>
     <form className="patient-search-form" onSubmit={search}><label className="patient-field">Mobile number or patient ID<input value={lookup} onChange={(event) => setLookup(event.target.value)} required placeholder="Enter mobile number or patient ID" /></label><button className="button button-dark" disabled={loading}>{loading ? 'Searching…' : <><Search size={16} /> Search</>}</button></form>
-    <div className="doctor-list">{patients.map((patient) => <article className="doctor-card" key={patient.id}><div className="doctor-card-summary"><span className="department-icon mint"><Users size={18} /></span><div><strong>{[patient.details.firstName, patient.details.middleName, patient.details.lastName].filter(Boolean).join(' ')}</strong><small>{patient.mobileNumber} · Patient ID: {patient.id}</small></div></div><dl className="request-details"><div><dt>Hospital</dt><dd>{hospital?.name}</dd></div><div><dt>Email</dt><dd>{patient.details.emailAddress}</dd></div></dl><button className="button button-outline" onClick={() => onOpenHistory(patient)}>Open patient history <ArrowRight size={15} /></button></article>)}{!loading && lookup && patients.length === 0 && <div className="appointment-empty"><span className="empty-icon"><Search size={21} /></span><strong>No patient found</strong><p>Check the mobile number or patient ID and try again.</p></div>}</div>
+    <div className="doctor-list">{patients.map((patient) => <article className="doctor-card" key={patient.id}><div className="doctor-card-summary"><span className="department-icon mint"><Users size={18} /></span><div><strong>{patientFullName(patient.details)}</strong><small>{patient.mobileNumber} · Patient ID: {patient.id}</small></div></div><dl className="request-details"><div><dt>Hospital</dt><dd>{hospital?.name}</dd></div></dl><button className="button button-outline" onClick={() => onOpenHistory(patient)}>Open patient history <ArrowRight size={15} /></button></article>)}{!loading && lookup && patients.length === 0 && <div className="appointment-empty"><span className="empty-icon"><Search size={21} /></span><strong>No patient found</strong><p>Check the mobile number or patient ID and try again.</p></div>}</div>
   </main>
 }
 

@@ -1,6 +1,6 @@
 # CareFlow
 
-CareFlow runs on one computer with a local Node.js API, SQLite database, and private PDF files. It does not need Firebase or a paid cloud plan. The computer hosting CareFlow must remain on and connected to the network while patients or staff use it.
+CareFlow runs on one computer with a local Node.js API, SQLite database, and private PDF, JPG, and PNG medical documents. It does not need Firebase or a paid cloud plan. The computer hosting CareFlow must remain on and connected to the network while patients or staff use it.
 
 ## Install and start
 
@@ -34,7 +34,7 @@ Requirements: Node.js 20 or newer and npm.
 
    This builds the React app and starts the API and website together. The terminal prints the laptop's local and network URLs. Open the network URL on phones connected to the same Wi-Fi, and make the common patient QR code from that URL. Do not use the old Firebase Hosting URL: it hosts only the old static frontend and has no local API, so appointment requests there cannot work.
 
-The SQLite database is created at `data/careflow.db`; private PDFs are under `data/records/`. To develop with Vite, run `npm run server:dev` in one terminal and `npm run dev` in another.
+The SQLite database is created at `data/careflow.db`; private medical documents are under `data/records/`. To develop with Vite, run `npm run server:dev` in one terminal and `npm run dev` in another.
 
 ## Staff accounts
 
@@ -53,7 +53,7 @@ npm test
 npm run build
 ```
 
-The backend tests cover cross-hospital denial, patient record ownership, concurrent last-slot booking, reminder idempotency, and private PDF uploads/downloads.
+The backend tests cover cross-hospital denial, patient record ownership, concurrent last-slot booking, reminder idempotency, and authenticated private medical document uploads/downloads.
 
 ## Start automatically
 
@@ -128,11 +128,12 @@ New-Item -ItemType Directory -Force ".\data\records" | Out-Null
 Copy-Item "$backup\records\*" ".\data\records" -Recurse -Force
 ```
 
-Do not restore or copy SQLite files while the server is running. Start CareFlow again with `npm run start`, then verify a patient and a PDF before returning it to use. Keep the external drive disconnected when not backing up.
+Do not restore or copy SQLite files while the server is running. Start CareFlow again with `npm run start`, then verify a patient and a medical document before returning it to use. Keep the external drive disconnected when not backing up.
 
 ## Security and privacy notes
 
-- Passwords are bcrypt-hashed; sessions use an HTTP-only cookie. API routes enforce role, patient ownership, and hospital scope. PDFs are private and can only be uploaded/downloaded through authenticated API routes.
+- Passwords are bcrypt-hashed; sessions use an HTTP-only cookie. API routes enforce role, patient ownership, and hospital scope. PDF, JPG, and PNG medical documents are private and can only be uploaded/downloaded through authenticated API routes.
+- Queue QR codes contain only a random ticket reference. Name and mobile number are fetched only after staff sign-in and hospital-scope authorization; public ticket tracking never includes patient identity.
 - Helmet headers, rate limits, Zod input validation, and audit events are enabled. Audit events record actions and IDs, not diagnoses or other clinical text.
 - Record consent can be withdrawn; patient export/erasure requests require admin approval. Clinical data and audit history are not automatically deleted. Set and document a retention schedule that meets local law and hospital policy; the backup rotation is not a medical-record retention policy.
 - App Check is a Firebase feature and is not used by this local backend. The server requires authenticated sessions for private data and must not be exposed directly to the internet. A Cloudflare Tunnel provides HTTPS transport but is not a replacement for account security, backups, or access controls.
@@ -140,5 +141,5 @@ Do not restore or copy SQLite files while the server is running. Start CareFlow 
 
 ## Data model
 
-The local SQLite database contains users and JSON-backed tables for patients, appointments, slots, doctors, medical records, notifications, audit logs, consents, privacy requests, queue tickets, patient details, and QR tracking projections. The `data/records/{hospitalId}/{patientId}/` directory holds random-named PDF files; it is not served as a public static directory.
+The local SQLite database contains users and JSON-backed tables for patients, appointments, slots, doctors, medical records, notifications, audit logs, consents, privacy requests, queue tickets, patient details, and QR tracking projections. The `data/records/{hospitalId}/{patientId}/` directory holds random-named PDF, JPG, and PNG files; it is not served as a public static directory. Firestore-compatible `pdfFiles` metadata remains in the existing records for backward compatibility and now includes category, description, uploader, and file type for new uploads.
 # Hosptial-Management-System

@@ -65,6 +65,16 @@ describe('local CareFlow API', () => {
     database.pragma('foreign_keys = ON')
   })
 
+  it('does not request HTTPS asset upgrades when served over HTTP', async () => {
+    const response = await supertest(app).get('/api/health')
+    expect(response.status).toBe(200)
+    expect(response.headers['content-security-policy']).not.toContain('upgrade-insecure-requests')
+    expect(response.headers['content-security-policy']).toContain("default-src 'self'")
+    expect(response.headers['cross-origin-opener-policy']).toBeUndefined()
+    expect(response.headers['origin-agent-cluster']).toBeUndefined()
+    expect(response.headers['strict-transport-security']).toBeUndefined()
+  })
+
   afterAll(async () => {
     database.close()
     await rm(testDataDirectory, { recursive: true, force: true })
@@ -96,6 +106,36 @@ describe('local CareFlow API', () => {
 
     const response = await agent.get(`/api/data/records/${recordId}`)
     expect(response.status).toBe(403)
+  })
+
+  it('keeps patient identity QR details staff-only and out of public ticket data', async () => {
+    const ticketId = randomUUID()
+    const staff = await addStaff('identity-staff@example.test', 'receptionist', 'central-city-hospital')
+    const otherHospitalStaff = await addStaff('identity-other@example.test', 'admin', 'riverside-general')
+    writeDocument('patientDetails', ticketId, {
+      hospitalId: 'central-city-hospital',
+      ownerUid: 'patient-owner',
+      details: { name: 'Private Test Patient', mobileNumber: '+15555550123' },
+    })
+    writeDocument('tracking', ticketId, {
+      code: 'QR1234',
+      hospitalId: 'central-city-hospital',
+      department: 'General medicine',
+      status: 'waiting',
+      ownerUid: 'patient-owner',
+    })
+
+    const publicTicket = await supertest(app).get(`/api/public/tracking/${ticketId}`)
+    expect(publicTicket.status).toBe(200)
+    expect(JSON.stringify(publicTicket.body)).not.toContain('Private Test Patient')
+    expect(JSON.stringify(publicTicket.body)).not.toContain('+15555550123')
+
+    const allowedDetails = await staff.get(`/api/data/patientDetails/${ticketId}`)
+    expect(allowedDetails.status).toBe(200)
+    expect(allowedDetails.body.data.details).toEqual({ name: 'Private Test Patient', mobileNumber: '+15555550123' })
+
+    const deniedDetails = await otherHospitalStaff.get(`/api/data/patientDetails/${ticketId}`)
+    expect(deniedDetails.status).toBe(403)
   })
 
   it('allows exactly one concurrent confirmation for the last slot', async () => {
@@ -167,7 +207,7 @@ describe('local CareFlow API', () => {
     expect(reminders[0].data.message).toContain('याद दिलाना')
   })
 
-  it('accepts only authenticated PDFs and serves them through the private API', async () => {
+  it('stores categorized medical document metadata and serves private PDFs, JPGs, and PNGs', async () => {
     const agent = await addStaff('records-admin@example.test', 'admin', 'central-city-hospital')
     const patientId = randomUUID()
     const recordId = randomUUID()
@@ -183,9 +223,20 @@ describe('local CareFlow API', () => {
       .field('hospitalId', 'central-city-hospital')
       .field('patientId', patientId)
       .field('recordId', recordId)
+      .field('category', 'Blood Test')
+      .field('description', 'Complete blood count')
       .attach('file', validPdf, { filename: 'report.pdf', contentType: 'application/pdf' })
     expect(upload.status).toBe(201)
     expect(upload.body.path).toMatch(/^records\/central-city-hospital\/.+\/.+\.pdf$/)
+    expect(upload.body).toMatchObject({
+      patientId,
+      contentType: 'application/pdf',
+      category: 'Blood Test',
+      description: 'Complete blood count',
+      uploaderRole: 'admin',
+    })
+    expect(upload.body.id).toEqual(expect.any(String))
+    expect(upload.body.uploadedByUserId).toEqual(expect.any(String))
 
     const download = await agent.get(`/api/files?path=${encodeURIComponent(upload.body.path)}`)
       .buffer(true)
@@ -198,11 +249,62 @@ describe('local CareFlow API', () => {
     expect(download.headers['content-type']).toContain('application/pdf')
     expect(download.body).toEqual(validPdf)
 
+    const medicalImages = [
+      {
+        bytes: Buffer.from([0xff, 0xd8, 0xff, 0x00]),
+        filename: 'xray.jpg',
+        contentType: 'image/jpeg',
+        category: 'X-ray',
+      },
+      {
+        bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]),
+        filename: 'scan.png',
+        contentType: 'image/png',
+        category: 'MRI',
+      },
+    ] as const
+    for (const image of medicalImages) {
+      const imageUpload = await agent.post('/api/files')
+        .field('hospitalId', 'central-city-hospital')
+        .field('patientId', patientId)
+        .field('recordId', recordId)
+        .field('category', image.category)
+        .attach('file', image.bytes, { filename: image.filename, contentType: image.contentType })
+      expect(imageUpload.status).toBe(201)
+      expect(imageUpload.body.contentType).toBe(image.contentType)
+      expect(imageUpload.body.category).toBe(image.category)
+
+      const imageDownload = await agent.get(`/api/files?path=${encodeURIComponent(imageUpload.body.path)}`)
+        .buffer(true)
+        .parse((response, callback) => {
+          const chunks: Buffer[] = []
+          response.on('data', (chunk: Buffer) => chunks.push(chunk))
+          response.on('end', () => callback(null, Buffer.concat(chunks)))
+        })
+      expect(imageDownload.status).toBe(200)
+      expect(imageDownload.headers['content-type']).toContain(image.contentType)
+      expect(imageDownload.body).toEqual(image.bytes)
+    }
+
+    const patientAgent = supertest.agent(app)
+    await patientAgent.post('/api/auth/guest').send({})
+    const denied = await patientAgent.get(`/api/files?path=${encodeURIComponent(upload.body.path)}`)
+    expect(denied.status).toBe(403)
+
     const invalid = await agent.post('/api/files')
       .field('hospitalId', 'central-city-hospital')
       .field('patientId', patientId)
       .field('recordId', recordId)
+      .field('category', 'Other Medical Reports')
       .attach('file', Buffer.from('not a pdf'), { filename: 'bad.pdf', contentType: 'application/pdf' })
     expect(invalid.status).toBe(400)
+
+    const mismatchedImage = await agent.post('/api/files')
+      .field('hospitalId', 'central-city-hospital')
+      .field('patientId', patientId)
+      .field('recordId', recordId)
+      .field('category', 'X-ray')
+      .attach('file', medicalImages[1].bytes, { filename: 'wrong.jpg', contentType: 'image/png' })
+    expect(mismatchedImage.status).toBe(400)
   })
 })
