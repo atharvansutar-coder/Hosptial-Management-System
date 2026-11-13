@@ -82,13 +82,6 @@ import {
 } from './localBackend'
 import { getBlob, ref as storageRef, uploadBytesResumable } from './localBackend'
 import { auth, db, isBackendConfigured, storage } from './localBackend'
-import { translatePatientText, type PatientLanguage } from './i18n'
-
-const PatientLanguageContext = createContext<{
-  language: PatientLanguage
-  setLanguage: (language: PatientLanguage) => void
-}>({ language: 'en', setLanguage: () => undefined })
-
 type Hospital = HospitalInfo & {
   address: string
   phone: string
@@ -121,20 +114,7 @@ function useRefreshHospitals(onError: (message: string) => void) {
 }
 
 function usePatientText() {
-  const { language } = useContext(PatientLanguageContext)
-  return (text: string) => translatePatientText(language, text)
-}
-
-function PatientLanguagePicker() {
-  const { language, setLanguage } = useContext(PatientLanguageContext)
-  return <label className="language-picker">
-    <span className="sr-only">Language</span>
-    <select aria-label="Language" value={language} onChange={(event) => setLanguage(event.target.value as PatientLanguage)}>
-      <option value="en">English</option>
-      <option value="hi">हिन्दी</option>
-      <option value="mr">मराठी</option>
-    </select>
-  </label>
+  return (text: string) => text
 }
 
 const departments = [
@@ -558,10 +538,6 @@ export default function App() {
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const navigateToView = (nextView: View) => navigate(viewPaths[nextView])
-  const [language, setLanguage] = useState<PatientLanguage>(() => {
-    const saved = window.localStorage.getItem('careflow-language')
-    return saved === 'hi' || saved === 'mr' ? saved : 'en'
-  })
   const [hospitals, setHospitals] = useState<Hospital[]>(defaultHospitals)
   const hospitalsRef = useRef(hospitals)
   hospitalsRef.current = hospitals
@@ -591,10 +567,6 @@ export default function App() {
       navigate(`${ticketPath}${location.search}`, { replace: true })
     }
   }, [location.pathname, location.search, navigate, searchParams])
-
-  useEffect(() => {
-    window.localStorage.setItem('careflow-language', language)
-  }, [language])
 
   const refreshHospitals = useCallback(async () => {
     try {
@@ -836,10 +808,9 @@ export default function App() {
     }
   }
 
-  const t = (text: string) => translatePatientText(language, text)
+  const t = (text: string) => text
 
   return (
-    <PatientLanguageContext.Provider value={{ language, setLanguage }}>
     <HospitalsContext.Provider value={{ hospitals, ready: hospitalsReady, refresh: refreshHospitals }}>
     <div className="app-shell">
       <header className="topbar">
@@ -866,7 +837,6 @@ export default function App() {
                 <button className="nav-login" onClick={() => { setError(''); navigateToView('admin') }}>Admin login <ArrowUpRight size={15} /></button>
               </>
             )}
-            <PatientLanguagePicker />
           </nav>
         </div>
       </header>
@@ -999,7 +969,6 @@ export default function App() {
       </footer>
     </div>
     </HospitalsContext.Provider>
-    </PatientLanguageContext.Provider>
   )
 }
 
