@@ -54,9 +54,9 @@ Administrators can add hospitals by name from the **Manage hospitals** section o
 
 ## Patient registration and appointment review
 
-Patients can create an account from **Patient account**, provide their contact details and appointment request, and track its status after submission. The profile and pending request are saved together; the request appears in the assigned hospital's **Request inbox**. Receptionists and admins can confirm it by assigning an available doctor and time slot, or decline it with a reason.
+Patients can create an account from **Patient account**, provide their contact details and appointment request, and track its status after submission. The profile and pending request are saved together; the request appears in the assigned hospital's **Request inbox**, with the patient name and mobile number visible to authorized staff. Receptionists and admins can confirm it by assigning an available doctor and time slot, or decline it with a reason. Add the hospital's doctor names in **Doctor availability**, then create their open times in **Slot scheduler**; the request inbox links directly to these setup pages when doctors or slots are missing.
 
-Hospital staff can search a patient and open **Patient history** to correct the patient's name or mobile number and attach multiple PDF, JPG, or PNG documents to visit records. When confirming or rescheduling an appointment, receptionists and admins can set an approximate arrival window around the reserved slot. Patients see a live countdown to the opening of that window in appointment status.
+Hospital staff can search a patient and open **Patient history** to correct the patient's name or mobile number, upload private PDF documents directly to the patient profile (independent of visits), and attach PDF, JPG, or PNG files to visit records. Profile PDFs are limited to 10 MB each and are visible only to the patient and staff at the assigned hospital. When confirming or rescheduling an appointment, receptionists and admins can set an approximate arrival window around the reserved slot. Patients see a live countdown to the opening of that window in appointment status.
 
 ## Tests
 

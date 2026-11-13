@@ -321,6 +321,7 @@ h1, h2, h3, p { margin-top: 0; }
 .queue-table td { padding: 12px 19px; border-bottom: 1px solid #f0f2f0; color: #74827a; font-size: 9px; white-space: nowrap; }
 .queue-table tbody tr:last-child td { border-bottom: 0; }
 .table-ticket { color: #436c58; font: 700 10px Manrope, sans-serif; }
+.queue-patient-name { color: #405b4e !important; font-weight: 700; }
 .queue-action { min-width: 79px; min-height: 27px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid #e4eae6; border-radius: 5px; background: white; color: #77877e; font-size: 8px; font-weight: 600; cursor: pointer; }
 .queue-row-actions { display: flex; align-items: center; gap: 6px; }
 .queue-action:hover:not(:disabled) { border-color: #bed8c8; color: #367659; }
@@ -518,6 +519,10 @@ h1, h2, h3, p { margin-top: 0; }
 .record-upload-form .button { justify-self: start; }
 .record-upload-form .patient-field input[type="file"], .record-form-grid input[type="file"] { width: 100%; padding: 8px; border: 1px solid #e4eae6; border-radius: 6px; background: #fff; color: #52675c; font-size: 10px; }
 .record-upload-form progress, .visit-record-form progress { width: 100%; height: 7px; grid-column: 1 / -1; accent-color: #2f795f; }
+.patient-profile-documents { margin-bottom: 16px; }
+.patient-profile-documents h2 { display: flex; align-items: center; gap: 8px; }
+.patient-profile-documents > p { margin-bottom: 0; color: #819087; font-size: 10px; }
+.patient-profile-documents .record-pdf-list { margin-top: 15px; }
 .appointment-visit-window { display: flex; align-items: flex-start; gap: 9px; margin-top: 12px; padding: 12px; border: 1px solid #dfece4; border-radius: 7px; color: #4a7560; background: #f0f7f1; }
 .appointment-visit-window > svg { flex: 0 0 auto; margin-top: 1px; }
 .appointment-visit-window > span { display: grid; gap: 4px; }

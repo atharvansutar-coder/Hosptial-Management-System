@@ -657,4 +657,55 @@ describe('local CareFlow API', () => {
       .attach('file', medicalImages[1].bytes, { filename: 'wrong.jpg', contentType: 'image/png' })
     expect(mismatchedImage.status).toBe(400)
   })
+
+  it('stores patient-profile PDFs independently from visits and enforces hospital access', async () => {
+    if (!hospitalTestAdmin || !northHospitalTestAdmin) throw new Error('Hospital test staff accounts were not initialized.')
+    const staff = hospitalTestAdmin
+    const otherHospital = northHospitalTestAdmin
+    const patientId = randomUUID()
+    writeDocument('patients', patientId, {
+      ownerUid: patientId,
+      hospitalIds: ['central-city-hospital'],
+      details: { name: 'Profile Document Patient', mobileNumber: '+15555550199' },
+    })
+    const validPdf = Buffer.from('%PDF-1.4\n% patient profile test\n')
+    const upload = await staff.post('/api/patient-documents')
+      .field('hospitalId', 'central-city-hospital')
+      .field('patientId', patientId)
+      .field('category', 'Prescription')
+      .field('description', 'Current prescription')
+      .attach('file', validPdf, { filename: 'prescription.pdf', contentType: 'application/pdf' })
+
+    expect(upload.status).toBe(201)
+    expect(upload.body).toMatchObject({
+      patientId,
+      ownerUid: patientId,
+      hospitalId: 'central-city-hospital',
+      name: 'prescription.pdf',
+      contentType: 'application/pdf',
+      category: 'Prescription',
+      uploaderRole: 'admin',
+    })
+    expect((await staff.get(`/api/data/patientDocuments/${upload.body.id}`)).body.data.path).toBe(upload.body.path)
+
+    const download = await staff.get(`/api/files?path=${encodeURIComponent(upload.body.path)}`)
+      .buffer(true)
+      .parse((response, callback) => {
+        const chunks: Buffer[] = []
+        response.on('data', (chunk: Buffer) => chunks.push(chunk))
+        response.on('end', () => callback(null, Buffer.concat(chunks)))
+      })
+    expect(download.status).toBe(200)
+    expect(download.body).toEqual(validPdf)
+
+    expect((await otherHospital.get(`/api/files?path=${encodeURIComponent(upload.body.path)}`)).status).toBe(403)
+    expect((await otherHospital.get(`/api/data/patientDocuments/${upload.body.id}`)).status).toBe(403)
+
+    const invalid = await staff.post('/api/patient-documents')
+      .field('hospitalId', 'central-city-hospital')
+      .field('patientId', patientId)
+      .field('category', 'Prescription')
+      .attach('file', Buffer.from('not a PDF'), { filename: 'invalid.pdf', contentType: 'application/pdf' })
+    expect(invalid.status).toBe(400)
+  })
 })

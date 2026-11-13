@@ -303,7 +303,7 @@ export async function getIdTokenResult(user: User) {
   return { claims }
 }
 
-type UploadedMedicalDocument = {
+export type UploadedMedicalDocument = {
   id: string
   name: string
   path: string
@@ -322,6 +322,57 @@ export async function getBlob(fileReference: { path: string }): Promise<Blob> {
     throw new ApiError(typeof body.error === 'string' ? body.error : 'Unable to download this private medical document.', response.status)
   }
   return response.blob()
+}
+
+export function uploadPatientDocument(
+  hospitalId: string,
+  patientId: string,
+  file: File,
+  category: MedicalDocumentCategory,
+  description: string,
+  onProgress: (progress: number) => void,
+): Promise<Omit<UploadedMedicalDocument, 'uploadedAt'> & { uploadedAt: Timestamp }> {
+  return new Promise<Omit<UploadedMedicalDocument, 'uploadedAt'> & { uploadedAt: Timestamp }>((resolve, reject) => {
+    const formData = new FormData()
+    formData.set('file', file)
+    formData.set('hospitalId', hospitalId)
+    formData.set('patientId', patientId)
+    formData.set('category', category)
+    formData.set('description', description)
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${apiBase}/patient-documents`)
+    xhr.withCredentials = true
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.round(event.loaded / event.total * 100))
+    }
+    xhr.onerror = () => reject(new Error('The local server could not be reached while uploading the patient document.'))
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        let message = 'Unable to upload this patient document.'
+        try {
+          const body = JSON.parse(xhr.responseText) as { error?: unknown }
+          if (typeof body.error === 'string') message = body.error
+        } catch {
+          reject(new Error('The local server returned an invalid upload response.'))
+          return
+        }
+        reject(new ApiError(message, xhr.status))
+        return
+      }
+      try {
+        const document = JSON.parse(xhr.responseText) as UploadedMedicalDocument
+        if (typeof document.id !== 'string' || typeof document.path !== 'string'
+          || typeof document.uploadedAt?.seconds !== 'number' || typeof document.uploadedAt?.nanoseconds !== 'number') {
+          reject(new Error('The local server returned an invalid patient document.'))
+          return
+        }
+        resolve({ ...document, uploadedAt: new Timestamp(document.uploadedAt.seconds, document.uploadedAt.nanoseconds) })
+      } catch {
+        reject(new Error('The local server returned an invalid upload response.'))
+      }
+    }
+    xhr.send(formData)
+  })
 }
 
 export function ref(_storage: unknown, path: string) { return { path } }

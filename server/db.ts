@@ -29,6 +29,7 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS slots (id TEXT PRIMARY KEY, hospitalId TEXT, ownerUid TEXT, data TEXT NOT NULL, createdAt TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS doctors (id TEXT PRIMARY KEY, hospitalId TEXT, ownerUid TEXT, data TEXT NOT NULL, createdAt TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, hospitalId TEXT, ownerUid TEXT, data TEXT NOT NULL, createdAt TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS patientDocuments (id TEXT PRIMARY KEY, hospitalId TEXT, ownerUid TEXT, data TEXT NOT NULL, createdAt TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, hospitalId TEXT, ownerUid TEXT, data TEXT NOT NULL, createdAt TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS auditLogs (id TEXT PRIMARY KEY, hospitalId TEXT, ownerUid TEXT, data TEXT NOT NULL, createdAt TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS consents (id TEXT PRIMARY KEY, hospitalId TEXT, ownerUid TEXT, data TEXT NOT NULL, createdAt TEXT NOT NULL);
@@ -60,6 +61,8 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS appointments_date_idx ON appointments(hospitalId, createdAt);
   CREATE INDEX IF NOT EXISTS records_owner_idx ON records(ownerUid);
   CREATE INDEX IF NOT EXISTS records_hospital_idx ON records(hospitalId);
+  CREATE INDEX IF NOT EXISTS patient_documents_owner_idx ON patientDocuments(ownerUid);
+  CREATE INDEX IF NOT EXISTS patient_documents_hospital_idx ON patientDocuments(hospitalId);
   CREATE INDEX IF NOT EXISTS slots_date_idx ON slots(hospitalId);
   CREATE INDEX IF NOT EXISTS patients_mobile_idx ON patients(hospitalId);
 `)
@@ -78,7 +81,7 @@ if (!userColumns.some((column) => column.name === 'active')) {
 }
 
 export const dataTables = new Set([
-  'patients', 'appointments', 'slots', 'doctors', 'records', 'notifications',
+  'patients', 'appointments', 'slots', 'doctors', 'records', 'patientDocuments', 'notifications',
   'auditLogs', 'consents', 'tickets', 'patientDetails', 'tracking', 'appointmentTracking',
   'privacyRequests',
 ])

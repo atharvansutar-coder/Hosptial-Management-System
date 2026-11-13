@@ -55,6 +55,7 @@ import {
   submitStaffAccessRequest,
   submitPrivacyRequest,
   withdrawRecordsConsent,
+  uploadPatientDocument,
   type MedicalDocumentCategory,
   type PatientRegistration,
   type HospitalInfo,
@@ -904,7 +905,7 @@ export default function App() {
           ? <StaffAccessRequestsPage onBack={() => navigateToView('staff')} onError={setError} />
           : <StaffLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
         <Route path={viewPaths['staff-inbox']} element={staffReady
-          ? <RequestInbox hospital={staffHospital} role={staffRole} onBack={() => navigateToView('staff')} onError={setError} />
+          ? <RequestInbox hospital={staffHospital} role={staffRole} onBack={() => navigateToView('staff')} onManageDoctors={() => navigateToView('staff-doctors')} onManageSlots={() => navigateToView('staff-scheduler')} onError={setError} />
           : <StaffLogin authReady={authReady} onBack={() => { setError(''); navigateToView('patient') }} onError={setError} />} />
         <Route path={viewPaths['staff-scheduler']} element={staffReady
           ? <SlotScheduler hospital={staffHospital} role={staffRole} onBack={() => navigateToView('staff')} onError={setError} />
@@ -1811,7 +1812,7 @@ function PatientHistoryPage({ patient, hospital, role, patientView, onBack, onEr
   const [editableDetails, setEditableDetails] = useState<PatientDetails>(patient?.details ?? emptyPatientDetails())
   const [savingPatientDetails, setSavingPatientDetails] = useState(false)
   const canEditPatientDetails = !patientView && role !== null
-  const canAttachFiles = !patientView && (role === 'receptionist' || role === 'admin')
+  const canAttachFiles = !patientView && role !== null
 
   useEffect(() => {
     setEditableDetails(patient?.details ?? emptyPatientDetails())
@@ -1915,6 +1916,13 @@ function PatientHistoryPage({ patient, hospital, role, patientView, onBack, onEr
             <button className="button button-dark" disabled={savingPatientDetails}>{savingPatientDetails ? 'Saving…' : <>Save patient details <Check size={15} /></>}</button>
           </form>
         </section>}
+        <PatientProfileDocuments
+          patient={patient}
+          hospital={hospital}
+          patientView={patientView}
+          canUpload={canAttachFiles}
+          onError={onError}
+        />
         {patientView && <section className="staff-note privacy-controls">
           <ShieldCheck size={17} />
           <div><strong>Privacy choices</strong><p>Withdraw consent or ask the hospital for an export or deletion review. Required clinical records may need to be retained.</p>
@@ -2038,6 +2046,104 @@ function MedicalRecordPdfUpload({ record, hospital, patient, onError }: { record
     {saving && <progress max={100} value={progress} aria-label="Medical document upload progress" />}
     <button className="button button-outline" disabled={saving || files.length === 0}>{saving ? `Uploading ${progress}%…` : <>Upload documents <FileText size={15} /></>}</button>
   </form>
+}
+
+function PatientProfileDocuments({ patient, hospital, patientView, canUpload, onError }: {
+  patient: SelectedPatient
+  hospital: Hospital | null
+  patientView: boolean
+  canUpload: boolean
+  onError: (message: string) => void
+}) {
+  const [documents, setDocuments] = useState<MedicalDocument[]>([])
+  const [loading, setLoading] = useState(true)
+  const [files, setFiles] = useState<File[]>([])
+  const [category, setCategory] = useState<MedicalDocumentCategory>('Other Medical Reports')
+  const [description, setDescription] = useState('')
+  const [progress, setProgress] = useState(0)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!db || !patient.id || (!patientView && !hospital)) {
+      setDocuments([])
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    const filters = [where('patientId', '==', patient.id)]
+    if (hospital) filters.push(where('hospitalId', '==', hospital.id))
+    return onSnapshot(query(collection(db, 'patientDocuments'), ...filters), (snapshot) => {
+      setDocuments(snapshot.docs.flatMap((item) => {
+        const data = item.data()
+        const uploadedAt = data.uploadedAt
+        if (typeof data.name !== 'string' || typeof data.path !== 'string' || !(uploadedAt instanceof Timestamp)) return []
+        return [{
+          id: item.id,
+          name: data.name,
+          path: data.path,
+          uploadedAt,
+          contentType: 'application/pdf',
+          category: medicalDocumentCategories.includes(data.category as MedicalDocumentCategory)
+            ? data.category as MedicalDocumentCategory
+            : undefined,
+          description: typeof data.description === 'string' ? data.description : undefined,
+          uploadedByUserId: typeof data.uploadedByUserId === 'string' ? data.uploadedByUserId : undefined,
+          uploaderRole: ['receptionist', 'doctor', 'admin'].includes(String(data.uploaderRole))
+            ? data.uploaderRole as StaffRole
+            : undefined,
+        }]
+      }).sort((a, b) => b.uploadedAt.toDate().getTime() - a.uploadedAt.toDate().getTime()))
+      setLoading(false)
+    }, (reason) => {
+      setLoading(false)
+      onError(`Unable to load patient documents: ${reason.message}`)
+    })
+  }, [patient.id, hospital?.id, patientView, onError])
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!hospital || !files.length) return
+    try {
+      if (documents.length + files.length > 100) throw new Error('A patient profile can contain at most 100 documents.')
+      for (const file of files) {
+        if (!file.name.toLowerCase().endsWith('.pdf') || file.size > 10 * 1024 * 1024) {
+          throw new Error(`${file.name} must be a PDF no larger than 10 MB.`)
+        }
+        const signature = new TextDecoder('ascii').decode(await file.slice(0, 1024).arrayBuffer())
+        if (!signature.includes('%PDF-')) throw new Error(`${file.name} is not a valid PDF document.`)
+      }
+      setSaving(true)
+      for (let index = 0; index < files.length; index += 1) {
+        const uploaded = await uploadPatientDocument(hospital.id, patient.id, files[index], category, description.trim(), (value) => {
+          setProgress(Math.round((index + value / 100) / files.length * 100))
+        })
+        setDocuments((current) => [uploaded, ...current.filter((item) => item.id !== uploaded.id)])
+      }
+      setFiles([])
+      setDescription('')
+      setProgress(0)
+      onError('')
+    } catch (reason) {
+      onError(reason instanceof Error ? `Unable to upload patient document: ${reason.message}` : 'Unable to upload patient document.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <section className="staff-tool-card patient-profile-documents">
+    <h2><FileText size={17} /> Patient documents</h2>
+    <p>Profile PDFs are stored independently from visit records.</p>
+    {canUpload && hospital && <form className="record-upload-form" onSubmit={(event) => void submit(event)}>
+      <label className="patient-field">PDF documents (up to 10 MB each)<input type="file" accept="application/pdf,.pdf" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /></label>
+      <label className="patient-field">Document category<select value={category} onChange={(event) => setCategory(event.target.value as MedicalDocumentCategory)}>{medicalDocumentCategories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+      <label className="patient-field record-upload-description">Description (optional)<input maxLength={500} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+      {saving && <progress max={100} value={progress} aria-label="Patient document upload progress" />}
+      <button className="button button-outline" disabled={saving || files.length === 0}>{saving ? `Uploading ${progress}%…` : <>Upload to patient profile <FileText size={15} /></>}</button>
+    </form>}
+    {loading ? <p><span className="spinner dark-spinner" /> Loading documents…</p>
+      : documents.length ? <RecordPdfList files={documents} onError={onError} />
+        : <p>No patient profile PDFs have been uploaded.</p>}
+  </section>
 }
 
 function DoctorTodayPage({ hospital, userId, onBack, onError }: { hospital: Hospital | null; userId: string; onBack: () => void; onError: (message: string) => void }) {
@@ -2703,7 +2809,14 @@ function PatientDetailsDialog({ ticket, details, onClose }: { ticket: Ticket; de
 
 type AppointmentAction = 'confirmed' | 'rescheduled' | 'declined'
 
-function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital | null; role: StaffRole | null; onBack: () => void; onError: (message: string) => void }) {
+function RequestInbox({ hospital, role, onBack, onManageDoctors, onManageSlots, onError }: {
+  hospital: Hospital | null
+  role: StaffRole | null
+  onBack: () => void
+  onManageDoctors: () => void
+  onManageSlots: () => void
+  onError: (message: string) => void
+}) {
   const [requests, setRequests] = useState<AppointmentRequest[]>([])
   const [doctors, setDoctors] = useState<Doctor[]>([])
   const [availableSlots, setAvailableSlots] = useState<AppointmentSlot[]>([])
@@ -2901,6 +3014,7 @@ function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital 
         <div className="dashboard-actions"><span className="live-indicator"><span /> Live requests</span><span className="request-count">{requests.length} pending</span></div>
       </div>
       {!canUpdate && <div className="staff-note"><ShieldCheck size={17} /><span>Your role can review these requests but cannot change appointment status.</span></div>}
+      {canUpdate && !loading && doctors.length === 0 && <div className="staff-note"><Stethoscope size={17} /><span>No doctors are listed for this hospital yet. Add doctors before confirming appointment requests.</span><button className="button button-outline" onClick={onManageDoctors}>Add doctors <ArrowRight size={14} /></button></div>}
       {loading ? <div className="appointment-empty"><span className="spinner dark-spinner" /><p>Loading requests…</p></div> : requests.length ? (
         <div className="request-inbox-list">{requests.map((request) => {
           const isActionOpen = actionRequest?.id === request.id
@@ -2929,6 +3043,7 @@ function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital 
                       {doctors.filter((doctor) => doctor.status === 'available' && doctor.department === request.department).map((doctor) => <option key={doctor.id} value={doctor.id}>{doctor.name}</option>)}
                     </select>
                   </label>
+                  {canUpdate && doctors.filter((doctor) => doctor.status === 'available' && doctor.department === request.department).length === 0 && <div className="staff-note patient-field-wide"><span>No available doctor is listed for {request.department}.</span><button className="button button-outline" type="button" onClick={onManageDoctors}>Add a doctor <ArrowRight size={14} /></button></div>}
                   <label className="patient-field patient-field-wide">Available time
                     <select required value={actionSlotId} onChange={(event) => {
                       setActionSlotId(event.target.value)
@@ -2945,7 +3060,7 @@ function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital 
                   <label className="patient-field">Approximate arrival from<input required type="time" value={visitWindowStart} onChange={(event) => setVisitWindowStart(event.target.value)} /></label>
                   <label className="patient-field">Approximate arrival until<input required type="time" value={visitWindowEnd} onChange={(event) => setVisitWindowEnd(event.target.value)} /></label>
                   <p className="checkin-description patient-field-wide">The patient sees a live countdown to this window. Make sure it includes the reserved slot.</p>
-                  {!availableSlots.length && actionDoctorId && <p className="checkin-description patient-field-wide">No open slot for this doctor on this date. Add a slot in Slot Scheduler.</p>}
+                  {!availableSlots.length && actionDoctorId && <div className="staff-note patient-field-wide"><span>No open slot for this doctor on this date.</span><button className="button button-outline" type="button" onClick={onManageSlots}>Add appointment slots <ArrowRight size={14} /></button></div>}
                 </div>}
                 <label className="patient-field">{actionRequest.action === 'declined' ? 'Reason for declining' : 'Note for patient (optional)'}<textarea required={actionRequest.action === 'declined'} maxLength={500} rows={2} value={staffNote} onChange={(event) => setStaffNote(event.target.value)} /></label>
                 <div className="request-actions"><button className="button button-dark" type="submit" disabled={savingId === request.id}>{savingId === request.id ? <><span className="spinner" /> Saving…</> : 'Save update'}</button><button className="button button-outline" type="button" onClick={() => setActionRequest(null)}>Cancel</button></div>
@@ -3613,6 +3728,25 @@ function StaffDashboard({ tickets, hospital, role, onOpenInbox, onOpenScheduler,
   const [updatingId, setUpdatingId] = useState('')
   const [patientDetails, setPatientDetails] = useState<{ ticket: Ticket; details: PatientDetails } | null>(null)
   const [loadingDetailsId, setLoadingDetailsId] = useState('')
+  const [patientNames, setPatientNames] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!db || !hospital) {
+      setPatientNames({})
+      return
+    }
+    return onSnapshot(
+      query(collection(db, 'patientDetails'), where('hospitalId', '==', hospital.id)),
+      (snapshot) => {
+        const names: Record<string, string> = {}
+        for (const item of snapshot.docs) {
+          const details = item.data().details
+          if (isPatientDetails(details)) names[item.id] = patientFullName(details)
+        }
+        setPatientNames(names)
+      },
+      (reason) => onError(`Unable to load patient names for the queue: ${reason.message}`),
+    )
+  }, [hospital?.id, onError])
   const sortedTickets = useMemo(
     () => [...tickets].sort((a, b) => (a.createdAt?.seconds ?? 0) - (b.createdAt?.seconds ?? 0)),
     [tickets],
@@ -3685,9 +3819,9 @@ function StaffDashboard({ tickets, hospital, role, onOpenInbox, onOpenScheduler,
         <div className="queue-panel-header"><div><h2>Patient queue</h2><p>Update a ticket to notify the patient in real time.</p></div><label className="filter-label"><span>Showing</span><select value={department} onChange={(event) => setDepartment(event.target.value as typeof department)}><option>All departments</option>{departments.map((item) => <option key={item.name}>{item.name}</option>)}</select></label></div>
         <div className="queue-table-wrap">
           <table className="queue-table">
-            <thead><tr><th>TICKET</th><th>DEPARTMENT</th><th>CHECKED IN</th><th>STATUS</th><th><span className="sr-only">Action</span></th></tr></thead>
+            <thead><tr><th>TICKET</th><th>PATIENT</th><th>DEPARTMENT</th><th>CHECKED IN</th><th>STATUS</th><th><span className="sr-only">Action</span></th></tr></thead>
             <tbody>{filtered.map((ticket) => <tr key={ticket.id}>
-              <td><span className="table-ticket">#{ticket.code}</span></td><td>{ticket.department}</td><td>{formatTime(ticket.createdAt)}</td>
+              <td><span className="table-ticket">#{ticket.code}</span></td><td className="queue-patient-name">{patientNames[ticket.id] || 'Name unavailable'}</td><td>{ticket.department}</td><td>{formatTime(ticket.createdAt)}</td>
               <td><span className={`ticket-status ${ticket.status}`}><span />{statusLabels[ticket.status]}</span></td>
               <td><div className="queue-row-actions">
                 <button className="queue-action details-action" onClick={() => viewPatientDetails(ticket)} disabled={loadingDetailsId !== ''}>{loadingDetailsId === ticket.id ? <span className="spinner dark-spinner" /> : <>Patient details <ArrowRight size={14} /></>}</button>

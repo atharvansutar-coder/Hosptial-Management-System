@@ -307,6 +307,68 @@ app.post('/api/files', requireAuth, writeLimit, medicalDocumentUpload.single('fi
   response.status(201).json(entry)
 }))
 
+app.post('/api/patient-documents', requireAuth, writeLimit, medicalDocumentUpload.single('file'), asyncRoute(async (request, response) => {
+  const parsed = z.object({
+    hospitalId: z.string().refine(hospitalExists),
+    patientId: idSchema,
+    category: medicalDocumentCategorySchema,
+    description: z.string().trim().max(500).default(''),
+  }).safeParse(request.body)
+  if (!parsed.success || !request.file) {
+    response.status(400).json({ error: 'Choose a PDF and provide its category and patient details.' })
+    return
+  }
+  const { hospitalId, patientId, category, description } = parsed.data
+  if (!request.user || request.user.role === 'patient' || request.user.hospitalId !== hospitalId) {
+    response.status(403).json({ error: 'This hospital is outside your access.' })
+    return
+  }
+  const patient = readDocument('patients', patientId)
+  if (!patient || patient.ownerUid !== patientId
+    || !Array.isArray(patient.hospitalIds) || !patient.hospitalIds.includes(hospitalId)) {
+    response.status(404).json({ error: 'The patient profile was not found at this hospital.' })
+    return
+  }
+  const detectedContentType = sniffMedicalDocumentType(request.file.buffer)
+  if (!request.file.originalname.toLowerCase().endsWith('.pdf') || detectedContentType !== 'application/pdf'
+    || (request.file.mimetype !== 'application/pdf' && request.file.mimetype !== 'application/octet-stream')) {
+    response.status(400).json({ error: 'Only valid PDF files can be uploaded to a patient profile.' })
+    return
+  }
+  if (latestRecordsConsent(patientId)?.granted === false) {
+    response.status(403).json({ error: 'The patient has withdrawn consent for additional record attachments.' })
+    return
+  }
+  const id = randomUUID()
+  const relativePath = `records/${hospitalId}/${patientId}/profile-${id}.pdf`
+  const root = dataDirectory
+  const absolutePath = resolve(root, relativePath)
+  if (!absolutePath.startsWith(`${root}${sep}`)) {
+    response.status(400).json({ error: 'Invalid medical document destination.' })
+    return
+  }
+  await mkdir(resolve(root, 'records', hospitalId, patientId), { recursive: true })
+  await writeFile(absolutePath, request.file.buffer, { flag: 'wx', mode: 0o600 })
+  const originalName = request.file.originalname.split(/[\\/]/).pop()
+  const uploadedAt = { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 }
+  const document = {
+    patientId,
+    ownerUid: patientId,
+    hospitalId,
+    name: (originalName ?? '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 180) || 'medical-document.pdf',
+    path: relativePath,
+    contentType: 'application/pdf',
+    category,
+    description,
+    uploadedByUserId: request.user.uid,
+    uploaderRole: request.user.role,
+    uploadedAt,
+  }
+  writeDocument('patientDocuments', id, document)
+  writeAudit(request.user, 'patient-profile-document-upload', 'patientDocuments', hospitalId)
+  response.status(201).json({ id, ...document })
+}))
+
 app.get('/api/files', requireAuth, asyncRoute(async (request, response) => {
   const requestedPath = z.string().min(1).max(1024).parse(request.query.path)
   const parts = requestedPath.split('/')
@@ -322,8 +384,11 @@ app.get('/api/files', requireAuth, asyncRoute(async (request, response) => {
   const matched = listDocuments('records').find(({ data }) =>
     data.hospitalId === hospitalId && data.patientId === patientId
       && Array.isArray(data.pdfFiles) && data.pdfFiles.some((file) => file && typeof file === 'object' && (file as RowData).path === requestedPath),
+  ) ?? listDocuments('patientDocuments').find(({ data }) =>
+    data.hospitalId === hospitalId && data.patientId === patientId && data.path === requestedPath,
   )
-  if (!matched || !canRead(request, 'records', matched.id, matched.data)) {
+  const table = matched && Array.isArray(matched.data.pdfFiles) ? 'records' : 'patientDocuments'
+  if (!matched || !canRead(request, table, matched.id, matched.data)) {
     response.status(403).json({ error: 'You do not have permission to access this medical document.' })
     return
   }
@@ -520,7 +585,7 @@ app.post('/api/privacy-requests/:id/approve', requireAuth, writeLimit, asyncRout
   }
   const uid = String(requestData.ownerUid)
   if (requestData.type === 'export') {
-    const exportData = Object.fromEntries(['patients', 'appointments', 'records', 'tickets', 'patientDetails']
+    const exportData = Object.fromEntries(['patients', 'appointments', 'records', 'patientDocuments', 'tickets', 'patientDetails']
       .map((table) => [table, listDocuments(table).filter(({ id: docId, data }) =>
         (docId === uid || data.ownerUid === uid || data.patientId === uid)
           && (data.hospitalId === request.user?.hospitalId
@@ -544,7 +609,7 @@ app.post('/api/privacy-requests/:id/approve', requireAuth, writeLimit, asyncRout
     }
     database.prepare('DELETE FROM records WHERE id = ?').run(recordId)
   }
-  for (const table of ['patients', 'appointments', 'tickets', 'patientDetails', 'tracking', 'appointmentTracking']) {
+  for (const table of ['patients', 'appointments', 'patientDocuments', 'tickets', 'patientDetails', 'tracking', 'appointmentTracking']) {
     for (const { id: docId, data } of listDocuments(table)) {
       if ((docId === uid || data.ownerUid === uid || data.patientId === uid)
         && (data.hospitalId === request.user.hospitalId
@@ -788,6 +853,7 @@ function canRead(request: Request, table: string, id: string, data: RowData) {
       return data.ownerUid === user.uid || data.patientId === user.uid
     }
     if (table === 'tracking' || table === 'appointmentTracking') return data.ownerUid === user.uid
+    if (table === 'patientDocuments') return data.ownerUid === user.uid
     if (table === 'consents' || table === 'privacyRequests') return data.ownerUid === user.uid
     return false
   }
@@ -797,7 +863,7 @@ function canRead(request: Request, table: string, id: string, data: RowData) {
   if (table === 'consents') return data.hospitalId === user.hospitalId
   if (user.role === 'doctor') {
     if (table === 'doctors') return data.userId === user.uid && data.hospitalId === user.hospitalId
-    if (['patients', 'patientDetails', 'tickets'].includes(table)) return belongsToHospital(data, user.hospitalId)
+    if (['patients', 'patientDetails', 'tickets', 'patientDocuments'].includes(table)) return belongsToHospital(data, user.hospitalId)
     if (table === 'appointments') return data.hospitalId === user.hospitalId && data.doctorId === doctorIdForUser(user.uid, user.hospitalId)
     if (table === 'records') return data.hospitalId === user.hospitalId
       && data.doctorId === doctorIdForUser(user.uid, user.hospitalId)
