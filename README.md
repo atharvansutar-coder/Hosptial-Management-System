@@ -36,7 +36,7 @@ Requirements: Node.js 20 or newer and npm.
 
    This builds the React app and starts the API and website together. The terminal prints the laptop's local and network URLs. Open the network URL on phones connected to the same Wi-Fi, and make the common patient QR code from that URL.
 
-The SQLite database is created at `data/careflow.db`; private medical documents are under `data/records/`. To develop with Vite, run `npm run dev`; it starts both the local API and Vite frontend. The terminal prints the frontend URL. `npm run server:dev` remains available when you need to run only the API separately.
+The SQLite database is created at `data/careflow.db`; private medical documents are under `data/records/`. The self-service check-in QR opens the focused check-in form. Submitted patients appear in the matching hospital's staff queue; staff can select **Patient details** on a ticket to view the submitted name and mobile number. To develop with Vite, run `npm run dev`; it starts both the local API and Vite frontend. The terminal prints the frontend URL. `npm run server:dev` remains available when you need to run only the API separately.
 
 ## Staff accounts
 

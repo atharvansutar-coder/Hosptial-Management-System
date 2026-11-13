@@ -1033,7 +1033,7 @@ function PatientHome({
   const [patientDetails, setPatientDetails] = useState<PatientDetails>(emptyPatientDetails)
   const selectedDepartment = departments.find((item) => item.name === selected) ?? departments[0]
   const SelectedIcon = selectedDepartment.icon
-  const checkInUrl = new URL(viewPaths['appointment-request'], window.location.origin)
+  const checkInUrl = new URL(`${viewPaths.patient}?checkin=1`, window.location.origin)
 
   useEffect(() => {
     if (!focusCheckIn) return
