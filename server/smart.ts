@@ -1,10 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { database, listDocuments, readDocument, writeDocument, type RowData } from './db'
+import { database, listDocuments, listHospitals, readDocument, writeDocument, type RowData } from './db'
 
-const hospitalNames: Record<string, string> = {
-  'central-city-hospital': 'Central City Hospital',
-  'riverside-general': 'Riverside General Hospital',
-  'northside-medical-center': 'Northside Medical Center',
+function hospitalNameFor(hospitalId: string) {
+  return listHospitals().find((hospital) => hospital.id === hospitalId)?.name ?? 'the hospital'
 }
 
 function stableId(key: string) {
@@ -78,7 +76,7 @@ export function queueAppointmentUpdate(appointment: RowData) {
   const hospitalId = String(appointment.hospitalId ?? '')
   const assignedDate = String(appointment.assignedDate ?? appointment.requestedDate ?? '')
   const assignedTime = String(appointment.assignedTime ?? '')
-  const message = messageFor(type, assignedDate, assignedTime, hospitalNames[hospitalId] ?? 'the hospital', language)
+  const message = messageFor(type, assignedDate, assignedTime, hospitalNameFor(hospitalId), language)
   queueNotification(`appointment-${appointment.id}-${type}-${assignedDate}-${assignedTime}`, {
     hospitalId,
     appointmentId: appointment.id,
@@ -119,7 +117,7 @@ function offerReleasedSlot(slotId: string, slot: RowData) {
   const time = String(slot.startTime)
   const language = patientLanguage(selected.data.patientId)
   const hospitalId = String(slot.hospitalId)
-  const message = messageFor('waitlist-offer', date, time, hospitalNames[hospitalId] ?? 'the hospital', language)
+  const message = messageFor('waitlist-offer', date, time, hospitalNameFor(hospitalId), language)
   writeDocument('appointments', selected.id, {
     ...selected.data,
     waitlistOfferSlotId: slotId,
@@ -160,7 +158,7 @@ export function runReminderAndFollowupSweep() {
     const stage = remaining <= 2 * 60 * 60 * 1000 ? 'reminder-2h' : 'reminder-24h'
     const hospitalId = String(data.hospitalId ?? '')
     const language = patientLanguage(data.patientId)
-    const message = messageFor(stage, String(data.assignedDate), String(data.assignedTime), hospitalNames[hospitalId] ?? 'the hospital', language)
+    const message = messageFor(stage, String(data.assignedDate), String(data.assignedTime), hospitalNameFor(hospitalId), language)
     queueNotification(`${stage}-${id}`, {
       hospitalId,
       appointmentId: id,
@@ -258,7 +256,7 @@ function createFollowupRequests() {
       needsReschedule: false,
     })
     const language = patientLanguage(ownerUid)
-    const hospitalName = hospitalNames[hospitalId] ?? 'the hospital'
+    const hospitalName = hospitalNameFor(hospitalId)
     const message = language === 'hi'
       ? `आपकी देखभाल टीम ने फ़ॉलो-अप की सलाह दी है। समय तय करने के लिए ${hospitalName} से संपर्क करें।`
       : language === 'mr'

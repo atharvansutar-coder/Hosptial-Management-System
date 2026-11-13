@@ -8,8 +8,8 @@ import { resolve, sep } from 'node:path'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
-import { dataDirectory, database, dataTables, listDocuments, readDocument, writeDocument, type RowData } from './db'
-import { clearSession, issueSession, login, registerPatient, requireAuth, userById } from './auth'
+import { createHospital, dataDirectory, database, dataTables, hospitalExists, listDocuments, listHospitals, readDocument, writeDocument, type RowData } from './db'
+import { clearSession, createStaffAccessRequest, issueSession, listStaffAccessRequests, login, registerPatientWithRequest, requireAuth, requireRole, reviewStaffAccessRequest, userById } from './auth'
 import { acceptWaitlistOffer, handleSlotRelease, patientLanguage, queueAppointmentUpdate, queueNotification } from './smart'
 
 const app = express()
@@ -45,8 +45,24 @@ const medicalDocumentTypeByExtension = {
   jpeg: { contentType: 'image/jpeg', extension: 'jpg' },
   png: { contentType: 'image/png', extension: 'png' },
 } as const
-const allowedHospitals = new Set(['central-city-hospital', 'riverside-general', 'northside-medical-center'])
 const allowedDepartments = new Set(['General medicine', 'Pediatrics', 'Dental care', 'Diagnostics'])
+const patientRegistrationSchema = z.object({
+  email: z.string(),
+  password: z.string(),
+  registration: z.object({
+    name: z.string().trim().min(1).max(200),
+    mobileNumber: z.string().trim().min(7).max(24),
+    hospitalId: z.string().refine(hospitalExists),
+    department: z.string().refine((value) => allowedDepartments.has(value)),
+    requestedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+      const date = new Date(`${value}T00:00:00.000Z`)
+      return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
+    }),
+    reason: z.string().trim().min(1).max(500),
+  }).strict(),
+  shareConsent: z.literal(true),
+  recordsConsent: z.literal(true),
+}).strict()
 
 function sniffMedicalDocumentType(buffer: Buffer) {
   if (buffer.subarray(0, 1024).includes(Buffer.from('%PDF-'))) return 'application/pdf'
@@ -61,6 +77,27 @@ app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 300, standardHeaders: 'd
 const authenticationLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false })
 const writeLimit = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false })
 app.get('/api/health', (_request, response) => response.json({ ok: true }))
+
+app.get('/api/hospitals', (_request, response) => {
+  response.set('Cache-Control', 'no-store').json({ hospitals: listHospitals() })
+})
+
+app.post('/api/hospitals', requireAuth, requireRole('admin'), (request, response) => {
+  const parsed = z.object({ name: z.string().trim().min(2).max(120) }).strict().safeParse(request.body)
+  if (!parsed.success) {
+    response.status(400).json({ error: 'Enter a hospital name between 2 and 120 characters.' })
+    return
+  }
+  try {
+    response.status(201).json({ hospital: createHospital(parsed.data.name) })
+  } catch (reason) {
+    if (reason instanceof Error && reason.message.includes('UNIQUE constraint failed')) {
+      response.status(409).json({ error: 'A hospital with this name already exists.' })
+      return
+    }
+    sendError(response, reason)
+  }
+})
 
 app.get('/api/public/tracking/:id', (request, response) => {
   const parsedId = idSchema.safeParse(String(request.params.id))
@@ -138,11 +175,42 @@ app.get('/api/auth/me', (request, response) => {
 })
 
 app.post('/api/auth/register', authenticationLimit, asyncRoute(async (request, response) => {
-  const body = z.object({ email: z.string(), password: z.string(), uid: z.string().uuid().optional() }).parse(request.body)
-  const user = await registerPatient(body.email, body.password, body.uid)
+  const body = patientRegistrationSchema.parse(request.body)
+  const { user, appointmentTrackingId } = await registerPatientWithRequest(body.email, body.password, body.registration)
   issueSession(response, user)
-  response.status(201).json({ user })
+  response.status(201).json({ user, appointmentTrackingId })
 }))
+
+app.post('/api/staff-access-requests', authenticationLimit, asyncRoute(async (request, response) => {
+  const body = z.object({
+    email: z.string(),
+    password: z.string(),
+    fullName: z.string().trim().min(1).max(200),
+    role: z.enum(['receptionist', 'doctor']),
+    hospitalId: z.string().refine(hospitalExists),
+  }).strict().parse(request.body)
+  const staffRequest = await createStaffAccessRequest(body, body.password)
+  response.status(201).json({ request: staffRequest })
+}))
+
+app.get('/api/staff-access-requests', requireAuth, requireRole('admin'), (_request, response) => {
+  response.json({ requests: listStaffAccessRequests() })
+})
+
+app.post('/api/staff-access-requests/:id/:decision', requireAuth, requireRole('admin'), (request, response) => {
+  const parsedId = idSchema.safeParse(request.params.id)
+  const decision = z.enum(['approve', 'reject']).safeParse(request.params.decision)
+  if (!parsedId.success || !decision.success || !request.user) {
+    response.status(400).json({ error: 'Invalid staff access request review.' })
+    return
+  }
+  try {
+    const result = reviewStaffAccessRequest(parsedId.data, request.user.uid, decision.data === 'approve')
+    response.json(result)
+  } catch (reason) {
+    sendError(response, reason)
+  }
+})
 
 app.post('/api/auth/login', authenticationLimit, asyncRoute(async (request, response) => {
   const body = z.object({ email: z.string(), password: z.string() }).parse(request.body)
@@ -161,15 +229,20 @@ app.post('/api/auth/link', authenticationLimit, requireAuth, asyncRoute(async (r
     response.status(403).json({ error: 'Only a guest patient session can be linked.' })
     return
   }
-  const body = z.object({ email: z.string(), password: z.string() }).parse(request.body)
-  const user = await registerPatient(body.email, body.password, request.user.uid)
+  const body = patientRegistrationSchema.parse(request.body)
+  const { user, appointmentTrackingId } = await registerPatientWithRequest(
+    body.email,
+    body.password,
+    body.registration,
+    request.user.uid,
+  )
   issueSession(response, user)
-  response.json({ user })
+  response.json({ user, appointmentTrackingId })
 }))
 
 app.post('/api/files', requireAuth, writeLimit, medicalDocumentUpload.single('file'), asyncRoute(async (request, response) => {
   const parsed = z.object({
-    hospitalId: z.string().refine((value) => allowedHospitals.has(value)),
+    hospitalId: z.string().refine(hospitalExists),
     patientId: idSchema,
     recordId: idSchema,
     category: medicalDocumentCategorySchema,
@@ -395,7 +468,7 @@ app.post('/api/privacy-requests', requireAuth, writeLimit, (request, response) =
   }
   const body = z.object({
     type: z.enum(['export', 'erase']),
-    hospitalId: z.string().refine((value) => allowedHospitals.has(value)),
+    hospitalId: z.string().refine(hospitalExists),
   }).safeParse(request.body)
   if (!body.success) {
     response.status(400).json({ error: 'Choose a valid hospital and request type.' })
@@ -837,7 +910,7 @@ function writeAudit(user: Request['user'], action: string, collectionName: strin
 }
 
 function validateDocument(table: string, data: RowData) {
-  if (data.hospitalId !== undefined && (typeof data.hospitalId !== 'string' || !allowedHospitals.has(data.hospitalId))) {
+  if (data.hospitalId !== undefined && (typeof data.hospitalId !== 'string' || !hospitalExists(data.hospitalId))) {
     throw Object.assign(new Error('Invalid hospital assignment.'), { status: 400 })
   }
   if (data.department !== undefined && !allowedDepartments.has(data.department as string)) {
@@ -847,7 +920,7 @@ function validateDocument(table: string, data: RowData) {
     z.object({
       patientId: z.string().min(1).max(128),
       ownerUid: z.string().min(1).max(128),
-      hospitalId: z.string().refine((value) => allowedHospitals.has(value)),
+      hospitalId: z.string().refine(hospitalExists),
       department: z.string().refine((value) => allowedDepartments.has(value)),
       requestedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       reason: z.string().min(1).max(500),
@@ -857,7 +930,7 @@ function validateDocument(table: string, data: RowData) {
     }).passthrough().parse(data)
   } else if (table === 'slots') {
     z.object({
-      hospitalId: z.string().refine((value) => allowedHospitals.has(value)),
+      hospitalId: z.string().refine(hospitalExists),
       doctorId: z.string().min(1).max(128),
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
@@ -866,7 +939,7 @@ function validateDocument(table: string, data: RowData) {
     }).passthrough().parse(data)
   } else if (table === 'doctors') {
     z.object({
-      hospitalId: z.string().refine((value) => allowedHospitals.has(value)),
+      hospitalId: z.string().refine(hospitalExists),
       name: z.string().min(1).max(120),
       department: z.string().refine((value) => allowedDepartments.has(value)),
       status: z.enum(['available', 'late', 'on_leave', 'emergency_only']),

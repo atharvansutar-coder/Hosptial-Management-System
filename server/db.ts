@@ -37,6 +37,24 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS patientDetails (id TEXT PRIMARY KEY, hospitalId TEXT, ownerUid TEXT, data TEXT NOT NULL, createdAt TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS tracking (id TEXT PRIMARY KEY, hospitalId TEXT, ownerUid TEXT, data TEXT NOT NULL, createdAt TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS appointmentTracking (id TEXT PRIMARY KEY, hospitalId TEXT, ownerUid TEXT, data TEXT NOT NULL, createdAt TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS hospitals (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    createdAt TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS staffAccessRequests (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL COLLATE NOCASE,
+    passwordHash TEXT NOT NULL,
+    fullName TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('receptionist', 'doctor')),
+    hospitalId TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    createdAt TEXT NOT NULL,
+    reviewedAt TEXT,
+    reviewedBy TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS staff_access_pending_email_idx ON staffAccessRequests(email COLLATE NOCASE) WHERE status = 'pending';
   CREATE INDEX IF NOT EXISTS appointments_owner_idx ON appointments(ownerUid);
   CREATE INDEX IF NOT EXISTS appointments_hospital_idx ON appointments(hospitalId);
   CREATE INDEX IF NOT EXISTS appointments_date_idx ON appointments(hospitalId, createdAt);
@@ -45,6 +63,15 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS slots_date_idx ON slots(hospitalId);
   CREATE INDEX IF NOT EXISTS patients_mobile_idx ON patients(hospitalId);
 `)
+const defaultHospitals = [
+  { id: 'central-city-hospital', name: 'Central City Hospital' },
+  { id: 'riverside-general', name: 'Riverside General Hospital' },
+  { id: 'northside-medical-center', name: 'Northside Medical Center' },
+]
+const insertDefaultHospital = database.prepare('INSERT OR IGNORE INTO hospitals (id, name, createdAt) VALUES (?, ?, ?)')
+for (const hospital of defaultHospitals) {
+  insertDefaultHospital.run(hospital.id, hospital.name, new Date().toISOString())
+}
 const userColumns = database.pragma('table_info(users)') as Array<{ name: string }>
 if (!userColumns.some((column) => column.name === 'active')) {
   database.exec('ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
@@ -57,6 +84,31 @@ export const dataTables = new Set([
 ])
 
 export type RowData = Record<string, unknown>
+
+export type HospitalInfo = { id: string; name: string }
+
+export function listHospitals(): HospitalInfo[] {
+  return database.prepare('SELECT id, name FROM hospitals ORDER BY name COLLATE NOCASE')
+    .all() as HospitalInfo[]
+}
+
+export function hospitalExists(id: string) {
+  return Boolean(database.prepare('SELECT 1 FROM hospitals WHERE id = ?').get(id))
+}
+
+export function createHospital(name: string): HospitalInfo {
+  const baseId = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'hospital'
+  let id = baseId
+  let suffix = 2
+  while (hospitalExists(id)) {
+    id = `${baseId}-${suffix}`
+    suffix += 1
+  }
+  database.prepare('INSERT INTO hospitals (id, name, createdAt) VALUES (?, ?, ?)')
+    .run(id, name, new Date().toISOString())
+  return { id, name }
+}
 
 export function readDocument(table: string, id: string): RowData | null {
   if (!dataTables.has(table)) return null

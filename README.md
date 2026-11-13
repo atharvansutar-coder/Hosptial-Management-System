@@ -1,6 +1,6 @@
 # CareFlow
 
-CareFlow runs on one computer with a local Node.js API, SQLite database, and private PDF, JPG, and PNG medical documents. It does not need Firebase or a paid cloud plan. The computer hosting CareFlow must remain on and connected to the network while patients or staff use it.
+CareFlow runs on one computer with a local Node.js API, SQLite database, and private PDF, JPG, and PNG medical documents. The computer hosting CareFlow must remain on and connected to the network while patients or staff use it.
 
 ## Install and start
 
@@ -18,7 +18,7 @@ Requirements: Node.js 20 or newer and npm.
    cp .env.example .env
    ```
 
-   On Windows PowerShell, use `Copy-Item .env.example .env`. If `.env` already exists, keep it and add/update these settings rather than overwriting it. Set `JWT_SECRET` to a random secret of at least 32 characters (on macOS/Linux, generate one with `openssl rand -hex 32`), `ADMIN_EMAIL` to the first administrator's email, and `ADMIN_PASSWORD` to a unique password of at least 12 characters. Keep `.env` private; it is ignored by Git.
+   On Windows PowerShell, use `Copy-Item .env.example .env`. If `.env` already exists, keep it and add/update these settings rather than overwriting it. Set `JWT_SECRET` to a random secret of at least 32 characters (on macOS/Linux, generate one with `openssl rand -hex 32`), `ADMIN_EMAIL` to the administrator's email, and `ADMIN_PASSWORD` to a unique password of at least 12 characters. `ADMIN_HOSPITAL_ID` defaults to `central-city-hospital`; it can instead be set to `riverside-general` or `northside-medical-center`. Keep `.env` private; it is ignored by Git.
 
 3. Create the first admin account:
 
@@ -26,15 +26,17 @@ Requirements: Node.js 20 or newer and npm.
    npm run seed:admin
    ```
 
+   If the command reports `ADMIN_PASSWORD` is missing, add `ADMIN_PASSWORD` to `.env`, save the file, and run the command again. The password is not generated automatically.
+
 4. Start CareFlow:
 
    ```sh
    npm run start
    ```
 
-   This builds the React app and starts the API and website together. The terminal prints the laptop's local and network URLs. Open the network URL on phones connected to the same Wi-Fi, and make the common patient QR code from that URL. Do not use the old Firebase Hosting URL: it hosts only the old static frontend and has no local API, so appointment requests there cannot work.
+   This builds the React app and starts the API and website together. The terminal prints the laptop's local and network URLs. Open the network URL on phones connected to the same Wi-Fi, and make the common patient QR code from that URL.
 
-The SQLite database is created at `data/careflow.db`; private medical documents are under `data/records/`. To develop with Vite, run `npm run server:dev` in one terminal and `npm run dev` in another.
+The SQLite database is created at `data/careflow.db`; private medical documents are under `data/records/`. To develop with Vite, run `npm run dev`; it starts both the local API and Vite frontend. The terminal prints the frontend URL. `npm run server:dev` remains available when you need to run only the API separately.
 
 ## Staff accounts
 
@@ -45,6 +47,14 @@ npm run staff:grant
 ```
 
 The command prints the staff user's ID. Link that ID to the doctor's profile in CareFlow's Doctor Availability page. To disable the configured staff account, keep its email in `STAFF_EMAIL` and run `npm run staff:remove`.
+
+New staff can use **Request access** on the staff sign-in page. Requests remain inactive until an administrator reviews them in **Staff access requests** from the separate administrator portal at `/admin`. Public requests can only ask for receptionist or doctor access; administrators cannot be self-requested. Administrators can review requests for all listed hospitals.
+
+Administrators can add hospitals by name from the **Manage hospitals** section of `/admin`. New hospitals appear in patient registration, appointment requests, and staff access requests across connected CareFlow pages. Names are unique, and added hospitals do not automatically receive contact details or staff accounts.
+
+## Patient registration and appointment review
+
+Patients can create an account from **Patient account**, provide their contact details and appointment request, and track its status after submission. The profile and pending request are saved together; the request appears in the assigned hospital's **Request inbox**. Receptionists and admins can confirm it by assigning an available doctor and time slot, or decline it with a reason.
 
 ## Tests
 
@@ -136,10 +146,9 @@ Do not restore or copy SQLite files while the server is running. Start CareFlow 
 - Queue QR codes contain only a random ticket reference. Name and mobile number are fetched only after staff sign-in and hospital-scope authorization; public ticket tracking never includes patient identity.
 - Helmet headers, rate limits, Zod input validation, and audit events are enabled. Audit events record actions and IDs, not diagnoses or other clinical text.
 - Record consent can be withdrawn; patient export/erasure requests require admin approval. Clinical data and audit history are not automatically deleted. Set and document a retention schedule that meets local law and hospital policy; the backup rotation is not a medical-record retention policy.
-- App Check is a Firebase feature and is not used by this local backend. The server requires authenticated sessions for private data and must not be exposed directly to the internet. A Cloudflare Tunnel provides HTTPS transport but is not a replacement for account security, backups, or access controls.
-- Existing Firebase data is not automatically copied into SQLite. Export and verify any records you need before switching; keep the Firebase project and its backups until the local data has been checked.
+- The server requires authenticated sessions for private data and must not be exposed directly to the internet. A Cloudflare Tunnel provides HTTPS transport but is not a replacement for account security, backups, or access controls.
 
 ## Data model
 
-The local SQLite database contains users and JSON-backed tables for patients, appointments, slots, doctors, medical records, notifications, audit logs, consents, privacy requests, queue tickets, patient details, and QR tracking projections. The `data/records/{hospitalId}/{patientId}/` directory holds random-named PDF, JPG, and PNG files; it is not served as a public static directory. Firestore-compatible `pdfFiles` metadata remains in the existing records for backward compatibility and now includes category, description, uploader, and file type for new uploads.
+The local SQLite database contains users and JSON-backed tables for patients, appointments, slots, doctors, medical records, notifications, audit logs, consents, privacy requests, queue tickets, patient details, and QR tracking projections. The `data/records/{hospitalId}/{patientId}/` directory holds random-named PDF, JPG, and PNG files; it is not served as a public static directory. The `pdfFiles` field stores medical-document metadata, including category, description, uploader, and file type.
 # Hosptial-Management-System

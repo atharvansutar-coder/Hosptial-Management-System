@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -32,6 +32,7 @@ import {
   UserPlus,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
+import { Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   EmailAuthProvider,
   createUserWithEmailAndPassword,
@@ -46,10 +47,18 @@ import {
   listPrivacyRequests,
   markNotificationHandled,
   markAppointmentNoShow,
+  createHospital,
+  listHospitals,
+  listStaffAccessRequests,
   queuePatientMessage,
+  reviewStaffAccessRequest,
+  submitStaffAccessRequest,
   submitPrivacyRequest,
   withdrawRecordsConsent,
   type MedicalDocumentCategory,
+  type PatientRegistration,
+  type HospitalInfo,
+  type StaffAccessRequest as StaffAccessRequestData,
   type User,
 } from './localBackend'
 import {
@@ -79,6 +88,37 @@ const PatientLanguageContext = createContext<{
   language: PatientLanguage
   setLanguage: (language: PatientLanguage) => void
 }>({ language: 'en', setLanguage: () => undefined })
+
+type Hospital = HospitalInfo & {
+  address: string
+  phone: string
+  whatsapp: string
+  mapLink: string
+}
+type HospitalId = string
+const defaultHospitals: Hospital[] = [
+  { id: 'central-city-hospital', name: 'Central City Hospital', address: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_ADDRESS ?? '', phone: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_PHONE ?? '', whatsapp: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_WHATSAPP ?? '', mapLink: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_MAP_LINK ?? '' },
+  { id: 'riverside-general', name: 'Riverside General Hospital', address: import.meta.env.VITE_RIVERSIDE_GENERAL_ADDRESS ?? '', phone: import.meta.env.VITE_RIVERSIDE_GENERAL_PHONE ?? '', whatsapp: import.meta.env.VITE_RIVERSIDE_GENERAL_WHATSAPP ?? '', mapLink: import.meta.env.VITE_RIVERSIDE_GENERAL_MAP_LINK ?? '' },
+  { id: 'northside-medical-center', name: 'Northside Medical Center', address: import.meta.env.VITE_NORTHSIDE_MEDICAL_ADDRESS ?? '', phone: import.meta.env.VITE_NORTHSIDE_MEDICAL_PHONE ?? '', whatsapp: import.meta.env.VITE_NORTHSIDE_MEDICAL_WHATSAPP ?? '', mapLink: import.meta.env.VITE_NORTHSIDE_MEDICAL_MAP_LINK ?? '' },
+]
+const HospitalsContext = createContext<{
+  hospitals: Hospital[]
+  ready: boolean
+  refresh: () => Promise<void>
+}>({ hospitals: defaultHospitals, ready: false, refresh: async () => undefined })
+
+function useHospitals() {
+  return useContext(HospitalsContext).hospitals
+}
+
+function useRefreshHospitals(onError: (message: string) => void) {
+  const { refresh } = useContext(HospitalsContext)
+  useEffect(() => {
+    void refresh().catch((reason: unknown) => {
+      onError(reason instanceof Error ? `Unable to refresh hospital list: ${reason.message}` : 'Unable to refresh hospital list.')
+    })
+  }, [refresh, onError])
+}
 
 function usePatientText() {
   const { language } = useContext(PatientLanguageContext)
@@ -116,14 +156,6 @@ const medicalDocumentCategories = [
   'Other Medical Reports',
 ] as const satisfies readonly MedicalDocumentCategory[]
 
-const hospitals = [
-  { id: 'central-city-hospital', name: 'Central City Hospital', address: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_ADDRESS ?? '', phone: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_PHONE ?? '', whatsapp: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_WHATSAPP ?? '', mapLink: import.meta.env.VITE_CENTRAL_CITY_HOSPITAL_MAP_LINK ?? '' },
-  { id: 'riverside-general', name: 'Riverside General Hospital', address: import.meta.env.VITE_RIVERSIDE_GENERAL_ADDRESS ?? '', phone: import.meta.env.VITE_RIVERSIDE_GENERAL_PHONE ?? '', whatsapp: import.meta.env.VITE_RIVERSIDE_GENERAL_WHATSAPP ?? '', mapLink: import.meta.env.VITE_RIVERSIDE_GENERAL_MAP_LINK ?? '' },
-  { id: 'northside-medical-center', name: 'Northside Medical Center', address: import.meta.env.VITE_NORTHSIDE_MEDICAL_ADDRESS ?? '', phone: import.meta.env.VITE_NORTHSIDE_MEDICAL_PHONE ?? '', whatsapp: import.meta.env.VITE_NORTHSIDE_MEDICAL_WHATSAPP ?? '', mapLink: import.meta.env.VITE_NORTHSIDE_MEDICAL_MAP_LINK ?? '' },
-] as const
-
-type Hospital = (typeof hospitals)[number]
-type HospitalId = Hospital['id']
 type Department = (typeof departments)[number]['name']
 type StaffRole = 'receptionist' | 'doctor' | 'admin'
 type TicketStatus = 'waiting' | 'called' | 'arrived' | 'completed' | 'no_show'
@@ -237,7 +269,29 @@ type MedicalRecord = {
   updatedAt: Timestamp | null
 }
 type SelectedPatient = { id: string; details: PatientDetails; mobileNumber: string }
-type View = 'patient' | 'staff' | 'staff-inbox' | 'staff-scheduler' | 'staff-doctors' | 'staff-search' | 'staff-create' | 'staff-today' | 'staff-history' | 'staff-privacy' | 'staff-notifications' | 'patient-auth' | 'appointment-request' | 'appointment-status' | 'patient-records'
+type View = 'patient' | 'staff' | 'staff-inbox' | 'staff-scheduler' | 'staff-doctors' | 'staff-search' | 'staff-create' | 'staff-today' | 'staff-history' | 'staff-privacy' | 'staff-notifications' | 'staff-access-request' | 'staff-access-requests' | 'admin' | 'admin-access-requests' | 'patient-auth' | 'appointment-request' | 'appointment-status' | 'patient-records'
+const viewPaths: Record<View, string> = {
+  patient: '/',
+  staff: '/staff',
+  'staff-inbox': '/staff/inbox',
+  'staff-scheduler': '/staff/scheduler',
+  'staff-doctors': '/staff/doctors',
+  'staff-search': '/staff/patients',
+  'staff-create': '/staff/requests/new',
+  'staff-today': '/staff/today',
+  'staff-history': '/staff/patients/history',
+  'staff-privacy': '/staff/privacy',
+  'staff-notifications': '/staff/notifications',
+  'staff-access-request': '/staff/access-request',
+  'staff-access-requests': '/staff/access-requests',
+  admin: '/admin',
+  'admin-access-requests': '/admin/access-requests',
+  'patient-auth': '/patient/account',
+  'appointment-request': '/appointments/request',
+  'appointment-status': '/appointments/status',
+  'patient-records': '/patient/records',
+}
+const ticketPath = '/ticket'
 
 function getLocalDateInputValue() {
   const date = new Date()
@@ -258,7 +312,7 @@ function patientFullName(details: PatientDetails) {
   return (details.name || [details.firstName, details.middleName, details.lastName].filter(Boolean).join(' ')).trim()
 }
 
-function getHospital(hospitalId: unknown): Hospital | undefined {
+function getHospital(hospitals: Hospital[], hospitalId: unknown): Hospital | undefined {
   return hospitals.find((hospital) => hospital.id === hospitalId)
 }
 
@@ -481,19 +535,27 @@ function Brand({ onClick }: { onClick: () => void }) {
 }
 
 export default function App() {
-  const [view, setView] = useState<View>(() => new URLSearchParams(window.location.search).has('appointment') ? 'appointment-status' : 'patient')
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [searchParams] = useSearchParams()
+  const navigateToView = (nextView: View) => navigate(viewPaths[nextView])
   const [language, setLanguage] = useState<PatientLanguage>(() => {
     const saved = window.localStorage.getItem('careflow-language')
     return saved === 'hi' || saved === 'mr' ? saved : 'en'
   })
+  const [hospitals, setHospitals] = useState<Hospital[]>(defaultHospitals)
+  const hospitalsRef = useRef(hospitals)
+  hospitalsRef.current = hospitals
+  const [hospitalsReady, setHospitalsReady] = useState(false)
+  const initialHospitalLoad = useRef(true)
   const [user, setUser] = useState<User | null>(null)
   const [isStaff, setIsStaff] = useState(false)
   const [staffRole, setStaffRole] = useState<StaffRole | null>(null)
   const [staffHospital, setStaffHospital] = useState<Hospital | null>(null)
   const [authReady, setAuthReady] = useState(false)
   const [error, setError] = useState('')
-  const [ticketId, setTicketId] = useState(() => new URLSearchParams(window.location.search).get('ticket'))
-  const [appointmentId, setAppointmentId] = useState(() => new URLSearchParams(window.location.search).get('appointment'))
+  const ticketId = searchParams.get('ticket')
+  const appointmentId = searchParams.get('appointment')
   const [ticket, setTicket] = useState<Ticket | null>(null)
   const [ticketMissing, setTicketMissing] = useState(false)
   const [ticketError, setTicketError] = useState('')
@@ -503,8 +565,56 @@ export default function App() {
   const [retryVersion, setRetryVersion] = useState(0)
 
   useEffect(() => {
+    if (location.pathname !== viewPaths.patient) return
+    if (searchParams.has('appointment')) {
+      navigate(`${viewPaths['appointment-status']}${location.search}`, { replace: true })
+    } else if (searchParams.has('ticket')) {
+      navigate(`${ticketPath}${location.search}`, { replace: true })
+    }
+  }, [location.pathname, location.search, navigate, searchParams])
+
+  useEffect(() => {
     window.localStorage.setItem('careflow-language', language)
   }, [language])
+
+  const refreshHospitals = useCallback(async () => {
+    try {
+      const result = await listHospitals()
+      setHospitals((current) => {
+        const currentById = new Map([...defaultHospitals, ...current].map((hospital) => [hospital.id, hospital]))
+        const fromServer = result.hospitals.map((hospital) => ({
+          ...currentById.get(hospital.id),
+          ...hospital,
+          address: currentById.get(hospital.id)?.address ?? '',
+          phone: currentById.get(hospital.id)?.phone ?? '',
+          whatsapp: currentById.get(hospital.id)?.whatsapp ?? '',
+          mapLink: currentById.get(hospital.id)?.mapLink ?? '',
+        }))
+        const serverIds = new Set(fromServer.map((hospital) => hospital.id))
+        return [...fromServer, ...current.filter((hospital) => !serverIds.has(hospital.id))]
+          .sort((a, b) => a.name.localeCompare(b.name))
+      })
+      setHospitalsReady(true)
+      initialHospitalLoad.current = false
+    } catch (reason) {
+      setHospitalsReady(true)
+      if (initialHospitalLoad.current) {
+        setError(reason instanceof Error ? `Unable to load hospital list: ${reason.message}` : 'Unable to load hospital list.')
+        initialHospitalLoad.current = false
+      }
+      throw reason
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    const refresh = () => {
+      if (active) void refreshHospitals().catch(() => undefined)
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 10000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [refreshHospitals])
 
   useEffect(() => {
     const updateOnlineState = () => setIsOnline(window.navigator.onLine)
@@ -521,6 +631,7 @@ export default function App() {
       setAuthReady(true)
       return
     }
+    if (!hospitalsReady) return
     return onAuthStateChanged(auth, async (nextUser) => {
       let staffAccount = false
       let accountRole: StaffRole | null = null
@@ -528,7 +639,7 @@ export default function App() {
       if (nextUser && !nextUser.isAnonymous) {
         try {
           const token = await getIdTokenResult(nextUser)
-          const hospital = getHospital(token.claims.hospitalId)
+          const hospital = getHospital(hospitalsRef.current, token.claims.hospitalId)
           const claimedRole = token.claims.role
           accountRole = claimedRole === 'receptionist' || claimedRole === 'doctor' || claimedRole === 'admin'
             ? claimedRole
@@ -552,22 +663,24 @@ export default function App() {
       setStaffRole(staffAccount ? accountRole : null)
       setStaffHospital(assignedHospital)
       setAuthReady(true)
-      setView((currentView) => staffAccount
-        ? new URLSearchParams(window.location.search).has('ticket')
-          ? 'patient'
-          : currentView === 'staff-inbox' ? currentView : 'staff'
-        : currentView === 'staff' || currentView === 'staff-inbox' ? 'patient' : currentView)
+      const currentPath = window.location.pathname
+      if (staffAccount
+        && !new URLSearchParams(window.location.search).has('ticket')
+        && !currentPath.startsWith('/staff')
+        && !(accountRole === 'admin' && currentPath.startsWith('/admin'))) {
+        navigateToView('staff')
+      }
     })
-  }, [])
+  }, [navigate, hospitalsReady])
 
   useEffect(() => {
-    if (view !== 'appointment-status' || !auth || !authReady || auth.currentUser) return
+    if (location.pathname !== viewPaths['appointment-status'] || !auth || !authReady || auth.currentUser) return
     let active = true
     signInAnonymously(auth).catch((reason: unknown) => {
       if (active) setError(reason instanceof Error ? `Unable to open appointment status: ${reason.message}` : 'Unable to open appointment status.')
     })
     return () => { active = false }
-  }, [view, authReady])
+  }, [location.pathname, authReady])
 
   useEffect(() => {
     if (!db || !ticketId) {
@@ -601,7 +714,7 @@ export default function App() {
   }, [ticketId])
 
   useEffect(() => {
-    if (!db || view !== 'staff' || !user || !isStaff || !staffHospital) {
+    if (!db || location.pathname !== viewPaths.staff || !user || !isStaff || !staffHospital) {
       setTickets([])
       return
     }
@@ -610,16 +723,11 @@ export default function App() {
       (snapshot) => setTickets(snapshot.docs.map(toTicket)),
       (reason) => setError(`Unable to load the queue: ${reason.message}`),
     )
-  }, [view, user, isStaff, staffHospital])
+  }, [location.pathname, user, isStaff, staffHospital])
 
   const showTicket = (id: string) => {
-    const url = new URL(window.location.href)
-    url.searchParams.set('ticket', id)
-    url.searchParams.delete('checkin')
-    url.hash = ''
-    window.history.pushState({}, '', url)
-    setTicketId(id)
-    setView('patient')
+    const params = new URLSearchParams({ ticket: id })
+    navigate({ pathname: ticketPath, search: `?${params.toString()}` })
   }
 
   const trackTicket = async (value: string) => {
@@ -660,10 +768,9 @@ export default function App() {
   }
 
   const clearTicket = () => {
-    const url = new URL(window.location.href)
-    url.searchParams.delete('ticket')
-    window.history.pushState({}, '', url)
-    setTicketId(null)
+    const params = new URLSearchParams(searchParams)
+    params.delete('ticket')
+    navigate({ pathname: viewPaths.patient, search: params.toString() ? `?${params.toString()}` : '' })
     setTicket(null)
     setTicketMissing(false)
     setTicketError('')
@@ -673,7 +780,7 @@ export default function App() {
     if (!auth) return
     try {
       await signOut(auth)
-      setView('patient')
+      navigateToView('patient')
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to sign out.')
@@ -691,7 +798,7 @@ export default function App() {
     try {
       if (!auth.currentUser) await signInAnonymously(auth)
       setError('')
-      setView('appointment-status')
+      navigateToView('appointment-status')
     } catch (reason) {
       setError(reason instanceof Error ? `Unable to open appointment status: ${reason.message}` : 'Unable to open appointment status.')
     }
@@ -704,7 +811,7 @@ export default function App() {
     try {
       if (!auth.currentUser) await signInAnonymously(auth)
       setError('')
-      setView('appointment-request')
+      navigateToView('appointment-request')
     } catch (reason) {
       setError(reason instanceof Error ? `Unable to open appointment request: ${reason.message}` : 'Unable to open appointment request.')
     }
@@ -714,27 +821,30 @@ export default function App() {
 
   return (
     <PatientLanguageContext.Provider value={{ language, setLanguage }}>
+    <HospitalsContext.Provider value={{ hospitals, ready: hospitalsReady, refresh: refreshHospitals }}>
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
-          <Brand onClick={() => { clearTicket(); setView('patient') }} />
+          <Brand onClick={() => { clearTicket(); navigateToView('patient') }} />
           <nav className="top-nav" aria-label="Main navigation">
-            {staffReady && (view.startsWith('staff') || activeTicket) ? (
+            {staffReady && (location.pathname.startsWith('/staff') || location.pathname.startsWith('/admin') || activeTicket) ? (
               <>
-                <span className="staff-identity"><span className="online-dot" /> {activeTicket && !view.startsWith('staff') ? 'Patient QR details' : view === 'staff-inbox' ? 'Request inbox' : view === 'staff-today' ? 'My patients today' : view === 'staff-history' ? 'Patient history' : view === 'staff-search' ? 'Patient search' : view === 'staff-privacy' ? 'Privacy requests' : view === 'staff-notifications' ? 'Patient messages' : 'Staff dashboard'}</span>
+                <span className="staff-identity"><span className="online-dot" /> {location.pathname.startsWith('/admin') ? 'Administrator' : activeTicket && !location.pathname.startsWith('/staff') ? 'Patient QR details' : location.pathname === viewPaths['staff-inbox'] ? 'Request inbox' : location.pathname === viewPaths['staff-today'] ? 'My patients today' : location.pathname === viewPaths['staff-history'] ? 'Patient history' : location.pathname === viewPaths['staff-search'] ? 'Patient search' : location.pathname === viewPaths['staff-privacy'] ? 'Privacy requests' : location.pathname === viewPaths['staff-notifications'] ? 'Patient messages' : location.pathname === viewPaths['staff-access-requests'] ? 'Staff access requests' : 'Staff dashboard'}</span>
                 <button className="nav-login" onClick={logout}><LogOut size={15} /> Sign out</button>
               </>
             ) : patientAccount ? (
               <>
                 <span className="staff-identity"><span className="online-dot" /> {user?.email}</span>
                 <button className="nav-login" onClick={logout}><LogOut size={15} /> Sign out</button>
-                <button className="nav-login" onClick={() => { setError(''); setView('staff') }}>Staff login <ArrowUpRight size={15} /></button>
+                <button className="nav-login" onClick={() => { setError(''); navigateToView('staff') }}>Staff login <ArrowUpRight size={15} /></button>
+                <button className="nav-login" onClick={() => { setError(''); navigateToView('admin') }}>Admin login <ArrowUpRight size={15} /></button>
               </>
             ) : (
               <>
                 <span className="nav-promise"><ShieldCheck size={16} /> Your visit, made simpler</span>
-                <button className="nav-login" onClick={() => { setError(''); setView('patient-auth') }}>Patient account <ArrowUpRight size={15} /></button>
-                <button className="nav-login" onClick={() => { setError(''); setView('staff') }}>Staff login <ArrowUpRight size={15} /></button>
+                <button className="nav-login" onClick={() => { setError(''); navigateToView('patient-auth') }}>Patient account <ArrowUpRight size={15} /></button>
+                <button className="nav-login" onClick={() => { setError(''); navigateToView('staff') }}>Staff login <ArrowUpRight size={15} /></button>
+                <button className="nav-login" onClick={() => { setError(''); navigateToView('admin') }}>Admin login <ArrowUpRight size={15} /></button>
               </>
             )}
             <PatientLanguagePicker />
@@ -747,88 +857,8 @@ export default function App() {
       {!isOnline && <div className="offline-banner" role="status">{t('You are offline. Some information may be old.')}</div>}
 
       <div key={retryVersion}>
-      {view === 'staff' || view === 'staff-inbox' ? (
-        staffReady
-          ? view === 'staff-inbox'
-            ? <RequestInbox hospital={staffHospital} role={staffRole} onBack={() => setView('staff')} onError={setError} />
-            : <StaffDashboard
-              tickets={tickets}
-              hospital={staffHospital}
-              onOpenInbox={() => setView('staff-inbox')}
-              onOpenScheduler={() => setView('staff-scheduler')}
-              onOpenDoctors={() => setView('staff-doctors')}
-              onOpenSearch={() => setView('staff-search')}
-              onOpenToday={() => setView('staff-today')}
-              role={staffRole}
-              onCreateRequest={() => setView('staff-create')}
-              onOpenPrivacy={() => setView('staff-privacy')}
-              onOpenNotifications={() => setView('staff-notifications')}
-              onLogout={logout}
-              onError={setError}
-            />
-          : <StaffLogin authReady={authReady} onBack={() => { setError(''); setView('patient') }} onError={setError} />
-      ) : view === 'staff-scheduler' ? (
-        staffReady ? <SlotScheduler hospital={staffHospital} role={staffRole} onBack={() => setView('staff')} onError={setError} /> : <StaffLogin authReady={authReady} onBack={() => setView('patient')} onError={setError} />
-      ) : view === 'staff-doctors' ? (
-        staffReady ? <DoctorAvailability hospital={staffHospital} role={staffRole} onBack={() => setView('staff')} onError={setError} /> : <StaffLogin authReady={authReady} onBack={() => setView('patient')} onError={setError} />
-      ) : view === 'staff-search' ? (
-        staffReady ? <PatientSearch hospital={staffHospital} onBack={() => setView('staff')} onError={setError} onOpenHistory={(patient) => { setSelectedPatient(patient); setView('staff-history') }} /> : <StaffLogin authReady={authReady} onBack={() => setView('patient')} onError={setError} />
-      ) : view === 'staff-history' ? (
-        staffReady && selectedPatient
-          ? <PatientHistoryPage patient={selectedPatient} hospital={staffHospital} role={staffRole} patientView={false} onBack={() => setView('staff-search')} onError={setError} />
-          : <StaffLogin authReady={authReady} onBack={() => setView('staff')} onError={setError} />
-      ) : view === 'staff-privacy' ? (
-        staffReady && staffRole === 'admin'
-          ? <PrivacyRequestsPage onBack={() => setView('staff')} onError={setError} />
-          : <StaffLogin authReady={authReady} onBack={() => setView('staff')} onError={setError} />
-      ) : view === 'staff-notifications' ? (
-        staffReady && (staffRole === 'admin' || staffRole === 'receptionist')
-          ? <NotificationQueuePage hospital={staffHospital} onBack={() => setView('staff')} onError={setError} />
-          : <StaffLogin authReady={authReady} onBack={() => setView('staff')} onError={setError} />
-      ) : view === 'staff-today' ? (
-        staffReady && staffRole === 'doctor'
-          ? <DoctorTodayPage hospital={staffHospital} userId={user?.uid ?? ''} onBack={() => setView('staff')} onError={setError} />
-          : <StaffLogin authReady={authReady} onBack={() => setView('staff')} onError={setError} />
-      ) : view === 'staff-create' ? (
-        staffReady ? <CreateRequestOnBehalf hospital={staffHospital} role={staffRole} onBack={() => setView('staff')} onError={setError} onCreated={(id) => {
-          const url = new URL(window.location.href)
-          url.searchParams.set('appointment', id)
-          window.history.pushState({}, '', url)
-          setAppointmentId(id)
-          setView('appointment-status')
-        }} /> : <StaffLogin authReady={authReady} onBack={() => setView('patient')} onError={setError} />
-      ) : view === 'patient-auth' ? (
-        <PatientAuth authReady={authReady} onBack={() => { setError(''); setView('patient') }} onDone={() => { setError(''); setView('patient') }} onError={setError} />
-      ) : view === 'appointment-request' ? (
-        <AppointmentRequestPage onBack={() => setView('patient')} onError={setError} onSubmitted={(id) => {
-          const url = new URL(window.location.href)
-          url.searchParams.set('appointment', id)
-          window.history.pushState({}, '', url)
-          setAppointmentId(id)
-          setView('appointment-status')
-        }} />
-      ) : view === 'appointment-status' ? (
-        user || auth?.currentUser ? <AppointmentStatusPage appointmentId={appointmentId} userId={user?.uid ?? auth?.currentUser?.uid ?? null} authReady={authReady} onBack={() => {
-          const url = new URL(window.location.href)
-          url.searchParams.delete('appointment')
-          window.history.pushState({}, '', url)
-          setAppointmentId(null)
-          setView('patient')
-        }} onError={setError} /> : <main className="appointment-page"><div className="appointment-empty"><span className="spinner dark-spinner" /><p>{t('Loading your requests…')}</p></div></main>
-      ) : view === 'patient-records' ? (
-        <PatientHistoryPage patient={user ? { id: user.uid, details: emptyPatientDetails(), mobileNumber: '' } : null} hospital={null} role={null} patientView onBack={() => setView('patient')} onError={setError} />
-      ) : activeTicket ? (
-        <TicketTracking
-          ticket={ticket}
-          missing={ticketMissing}
-          error={ticketError}
-          isStaff={staffReady}
-          staffHospital={staffHospital}
-          onStaffLogin={() => { setError(''); setView('staff') }}
-          onBack={clearTicket}
-        />
-      ) : (
-        <PatientHome
+      <Routes>
+        <Route path={viewPaths.patient} element={<PatientHome
           onTicketCreated={showTicket}
           onError={setError}
           onTrackTicket={trackTicket}
@@ -841,22 +871,115 @@ export default function App() {
             }
             try {
               if (!auth.currentUser) await signInAnonymously(auth)
-              setView('patient-records')
+              navigateToView('patient-records')
             } catch (reason) {
               setError(reason instanceof Error ? `Unable to open patient records: ${reason.message}` : 'Unable to open patient records.')
             }
           }}
-          focusCheckIn={new URLSearchParams(window.location.search).get('checkin') === '1'}
-        />
-      )}
+          focusCheckIn={searchParams.get('checkin') === '1'}
+        />} />
+        <Route path={viewPaths.staff} element={staffReady
+          ? <StaffDashboard
+            tickets={tickets}
+            hospital={staffHospital}
+            onOpenInbox={() => navigateToView('staff-inbox')}
+            onOpenScheduler={() => navigateToView('staff-scheduler')}
+            onOpenDoctors={() => navigateToView('staff-doctors')}
+            onOpenSearch={() => navigateToView('staff-search')}
+            onOpenToday={() => navigateToView('staff-today')}
+            role={staffRole}
+            onCreateRequest={() => navigateToView('staff-create')}
+            onOpenPrivacy={() => navigateToView('staff-privacy')}
+            onOpenNotifications={() => navigateToView('staff-notifications')}
+            onOpenStaffAccessRequests={() => navigateToView('staff-access-requests')}
+            onLogout={logout}
+            onError={setError}
+          />
+          : <StaffLogin authReady={authReady} onBack={() => { setError(''); navigateToView('patient') }} onError={setError} />} />
+        <Route path={viewPaths.admin} element={staffReady && staffRole === 'admin'
+          ? <AdminDashboard onOpenRequests={() => navigateToView('admin-access-requests')} onHospitalAdded={(hospital) => {
+            setHospitals((current) => [...current.filter((item) => item.id !== hospital.id), {
+              ...hospital,
+              address: '',
+              phone: '',
+              whatsapp: '',
+              mapLink: '',
+            }].sort((a, b) => a.name.localeCompare(b.name)))
+          }} onError={setError} />
+          : <AdminLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
+        <Route path={viewPaths['admin-access-requests']} element={staffReady && staffRole === 'admin'
+          ? <StaffAccessRequestsPage onBack={() => navigateToView('admin')} onError={setError} />
+          : <AdminLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
+        <Route path={viewPaths['staff-access-request']} element={<StaffAccessRequestForm authReady={authReady} onBack={() => navigateToView('staff')} onError={setError} />} />
+        <Route path={viewPaths['staff-access-requests']} element={staffReady && staffRole === 'admin'
+          ? <StaffAccessRequestsPage onBack={() => navigateToView('staff')} onError={setError} />
+          : <StaffLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
+        <Route path={viewPaths['staff-inbox']} element={staffReady
+          ? <RequestInbox hospital={staffHospital} role={staffRole} onBack={() => navigateToView('staff')} onError={setError} />
+          : <StaffLogin authReady={authReady} onBack={() => { setError(''); navigateToView('patient') }} onError={setError} />} />
+        <Route path={viewPaths['staff-scheduler']} element={staffReady
+          ? <SlotScheduler hospital={staffHospital} role={staffRole} onBack={() => navigateToView('staff')} onError={setError} />
+          : <StaffLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
+        <Route path={viewPaths['staff-doctors']} element={staffReady
+          ? <DoctorAvailability hospital={staffHospital} role={staffRole} onBack={() => navigateToView('staff')} onError={setError} />
+          : <StaffLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
+        <Route path={viewPaths['staff-search']} element={staffReady
+          ? <PatientSearch hospital={staffHospital} onBack={() => navigateToView('staff')} onError={setError} onOpenHistory={(patient) => { setSelectedPatient(patient); navigateToView('staff-history') }} />
+          : <StaffLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
+        <Route path={viewPaths['staff-history']} element={staffReady && selectedPatient
+          ? <PatientHistoryPage patient={selectedPatient} hospital={staffHospital} role={staffRole} patientView={false} onBack={() => navigateToView('staff-search')} onError={setError} />
+          : <StaffLogin authReady={authReady} onBack={() => navigateToView('staff')} onError={setError} />} />
+        <Route path={viewPaths['staff-privacy']} element={staffReady && staffRole === 'admin'
+          ? <PrivacyRequestsPage onBack={() => navigateToView('staff')} onError={setError} />
+          : <StaffLogin authReady={authReady} onBack={() => navigateToView('staff')} onError={setError} />} />
+        <Route path={viewPaths['staff-notifications']} element={staffReady && (staffRole === 'admin' || staffRole === 'receptionist')
+          ? <NotificationQueuePage hospital={staffHospital} onBack={() => navigateToView('staff')} onError={setError} />
+          : <StaffLogin authReady={authReady} onBack={() => navigateToView('staff')} onError={setError} />} />
+        <Route path={viewPaths['staff-today']} element={staffReady && staffRole === 'doctor'
+          ? <DoctorTodayPage hospital={staffHospital} userId={user?.uid ?? ''} onBack={() => navigateToView('staff')} onError={setError} />
+          : <StaffLogin authReady={authReady} onBack={() => navigateToView('staff')} onError={setError} />} />
+        <Route path={viewPaths['staff-create']} element={staffReady
+          ? <CreateRequestOnBehalf hospital={staffHospital} role={staffRole} onBack={() => navigateToView('staff')} onError={setError} onCreated={(id) => {
+            navigate({ pathname: viewPaths['appointment-status'], search: `?${new URLSearchParams({ appointment: id }).toString()}` })
+          }} />
+          : <StaffLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
+        <Route path={viewPaths['patient-auth']} element={<PatientAuth authReady={authReady} onBack={() => { setError(''); navigateToView('patient') }} onDone={(trackingId) => {
+          setError('')
+          if (trackingId) {
+            navigate({ pathname: viewPaths['appointment-status'], search: `?${new URLSearchParams({ appointment: trackingId }).toString()}` })
+          } else {
+            navigateToView('patient')
+          }
+        }} onError={setError} />} />
+        <Route path={viewPaths['appointment-request']} element={<AppointmentRequestPage onBack={() => navigateToView('patient')} onError={setError} onSubmitted={(id) => {
+          navigate({ pathname: viewPaths['appointment-status'], search: `?${new URLSearchParams({ appointment: id }).toString()}` })
+        }} />} />
+        <Route path={viewPaths['appointment-status']} element={user || auth?.currentUser
+          ? <AppointmentStatusPage appointmentId={appointmentId} userId={user?.uid ?? auth?.currentUser?.uid ?? null} authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />
+          : <main className="appointment-page"><div className="appointment-empty"><span className="spinner dark-spinner" /><p>{t('Loading your requests…')}</p></div></main>} />
+        <Route path={viewPaths['patient-records']} element={<PatientHistoryPage patient={user ? { id: user.uid, details: emptyPatientDetails(), mobileNumber: '' } : null} hospital={null} role={null} patientView onBack={() => navigateToView('patient')} onError={setError} />} />
+        <Route path={ticketPath} element={ticketId
+          ? <TicketTracking
+            ticket={ticket}
+            missing={ticketMissing}
+            error={ticketError}
+            isStaff={staffReady}
+            staffHospital={staffHospital}
+            onStaffLogin={() => { setError(''); navigateToView('staff') }}
+            onBack={clearTicket}
+          />
+          : <Navigate to={viewPaths.patient} replace />} />
+        <Route path="*" element={<Navigate to={viewPaths.patient} replace />} />
+      </Routes>
       </div>
 
       <footer className="footer">
         <span>© 2026 CareFlow Health</span>
         <span><ShieldCheck size={14} /> Private by design</span>
-        <button onClick={() => setView(view === 'staff' ? 'patient' : 'staff')}>Need help?</button>
+        <button onClick={() => navigateToView(location.pathname.startsWith('/staff') ? 'patient' : 'staff')}>Need help?</button>
       </footer>
     </div>
+    </HospitalsContext.Provider>
     </PatientLanguageContext.Provider>
   )
 }
@@ -879,6 +1002,9 @@ function PatientHome({
   focusCheckIn: boolean
 }) {
   const t = usePatientText()
+  const hospitals = useHospitals()
+  const hospitalsReady = useContext(HospitalsContext).ready
+  useRefreshHospitals(onError)
   const [hospitalId, setHospitalId] = useState<HospitalId>(hospitals[0].id)
   const [selected, setSelected] = useState<Department>('General medicine')
   const [creating, setCreating] = useState(false)
@@ -888,10 +1014,7 @@ function PatientHome({
   const [patientDetails, setPatientDetails] = useState<PatientDetails>(emptyPatientDetails)
   const selectedDepartment = departments.find((item) => item.name === selected) ?? departments[0]
   const SelectedIcon = selectedDepartment.icon
-  const checkInUrl = new URL(window.location.href)
-  checkInUrl.searchParams.delete('ticket')
-  checkInUrl.searchParams.set('checkin', '1')
-  checkInUrl.hash = 'check-in'
+  const checkInUrl = new URL(viewPaths['appointment-request'], window.location.origin)
 
   useEffect(() => {
     if (!focusCheckIn) return
@@ -1035,8 +1158,8 @@ function PatientHome({
             <label className="hospital-field" htmlFor="patient-hospital">
               <span className="sr-only">Hospital</span>
               <Hospital size={17} />
-              <select id="patient-hospital" value={hospitalId} onChange={(event) => {
-                const hospital = getHospital(event.target.value)
+              <select id="patient-hospital" value={hospitalId} disabled={!hospitalsReady} onChange={(event) => {
+                const hospital = getHospital(hospitals, event.target.value)
                 if (hospital) setHospitalId(hospital.id)
               }}>
                 {hospitals.map((hospital) => <option key={hospital.id} value={hospital.id}>{hospital.name}</option>)}
@@ -1145,6 +1268,9 @@ function PatientDetailsFields({
 
 function AppointmentRequestPage({ onBack, onError, onSubmitted }: { onBack: () => void; onError: (message: string) => void; onSubmitted: (trackingId: string) => void }) {
   const t = usePatientText()
+  const hospitals = useHospitals()
+  const hospitalsReady = useContext(HospitalsContext).ready
+  useRefreshHospitals(onError)
   const [hospitalId, setHospitalId] = useState<HospitalId>(hospitals[0].id)
   const [department, setDepartment] = useState<Department>('General medicine')
   const [requestedDate, setRequestedDate] = useState(getLocalDateInputValue)
@@ -1159,7 +1285,7 @@ function AppointmentRequestPage({ onBack, onError, onSubmitted }: { onBack: () =
   const [consentGiven, setConsentGiven] = useState(false)
   const [recordsConsentGiven, setRecordsConsentGiven] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const selectedHospital = getHospital(hospitalId)
+  const selectedHospital = getHospital(hospitals, hospitalId)
 
   useEffect(() => {
     if (!db || !hospitalId || !requestedDate || !auth?.currentUser) {
@@ -1314,8 +1440,8 @@ function AppointmentRequestPage({ onBack, onError, onSubmitted }: { onBack: () =
         <form className="patient-details-form" onSubmit={submit}>
           <div className="appointment-fields-grid">
             <label className="patient-field patient-field-wide">{t('Hospital')}
-              <select required value={hospitalId} onChange={(event) => {
-                const hospital = getHospital(event.target.value)
+              <select required value={hospitalId} disabled={!hospitalsReady} onChange={(event) => {
+                const hospital = getHospital(hospitals, event.target.value)
                 if (hospital) setHospitalId(hospital.id)
               }}>{hospitals.map((hospital) => <option key={hospital.id} value={hospital.id}>{hospital.name}</option>)}</select>
             </label>
@@ -1560,8 +1686,9 @@ function AppointmentStatusCard({
   onAcceptOffer: () => void
 }) {
   const t = usePatientText()
+  const hospitals = useHospitals()
   const [doctor, setDoctor] = useState<Doctor | null>(null)
-  const hospital = getHospital(appointment?.hospitalId ?? tracking?.hospitalId)
+  const hospital = getHospital(hospitals, appointment?.hospitalId ?? tracking?.hospitalId)
   const status = appointment?.status ?? tracking?.status ?? 'pending'
   const assignedDate = appointment?.assignedDate ?? tracking?.assignedDate ?? ''
   const assignedTime = appointment?.assignedTime ?? tracking?.assignedTime ?? ''
@@ -1753,8 +1880,9 @@ function PatientHistoryPage({ patient, hospital, role, patientView, onBack, onEr
 }
 
 function MedicalRecordCard({ record, children, onError }: { record: MedicalRecord; children?: React.ReactNode; onError: (message: string) => void }) {
+  const hospitals = useHospitals()
   return <article className="medical-record-card">
-    <div className="medical-record-heading"><div><span className="eyebrow"><span className="eyebrow-line" /> {getHospital(record.hospitalId)?.name ?? 'Hospital'}</span><h3>{record.visitDate}</h3></div><span className="medical-record-tag"><Stethoscope size={13} /> Visit record</span></div>
+    <div className="medical-record-heading"><div><span className="eyebrow"><span className="eyebrow-line" /> {getHospital(hospitals, record.hospitalId)?.name ?? 'Hospital'}</span><h3>{record.visitDate}</h3></div><span className="medical-record-tag"><Stethoscope size={13} /> Visit record</span></div>
     <dl className="medical-record-fields">
       {record.diagnosis && <div><dt>Diagnosis</dt><dd>{record.diagnosis}</dd></div>}
       {record.allergies && <div><dt>Allergies</dt><dd>{record.allergies}</dd></div>}
@@ -2108,6 +2236,7 @@ function TicketTracking({
   onStaffLogin: () => void
   onBack: () => void
 }) {
+  const hospitals = useHospitals()
   const [patientDetails, setPatientDetails] = useState<PatientDetails | null>(null)
   const [detailsError, setDetailsError] = useState('')
   const [loadingDetails, setLoadingDetails] = useState(false)
@@ -2142,7 +2271,7 @@ function TicketTracking({
   if (!ticket) return <main className="tracking-page"><div className="tracking-card loading-card"><span className="spinner dark-spinner" /><p>Loading your ticket…</p></div></main>
 
   const url = `${window.location.origin}${window.location.pathname}?ticket=${ticket.id}`
-  const hospitalName = getHospital(ticket.hospitalId)?.name ?? 'Hospital'
+  const hospitalName = getHospital(hospitals, ticket.hospitalId)?.name ?? 'Hospital'
   const called = ticket.status === 'called'
   const completed = ticket.status === 'completed'
   return (
@@ -2200,13 +2329,23 @@ function PatientAuth({
 }: {
   authReady: boolean
   onBack: () => void
-  onDone: () => void
+  onDone: (trackingId?: string) => void
   onError: (message: string) => void
 }) {
+  const hospitals = useHospitals()
+  const hospitalsReady = useContext(HospitalsContext).ready
+  useRefreshHospitals(onError)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [creatingAccount, setCreatingAccount] = useState(true)
   const [loading, setLoading] = useState(false)
+  const [patientDetails, setPatientDetails] = useState<PatientDetails>(emptyPatientDetails)
+  const [hospitalId, setHospitalId] = useState<HospitalId>(hospitals[0].id)
+  const [department, setDepartment] = useState<Department>(departments[0].name)
+  const [requestedDate, setRequestedDate] = useState(getLocalDateInputValue)
+  const [reason, setReason] = useState('')
+  const [shareConsent, setShareConsent] = useState(false)
+  const [recordsConsent, setRecordsConsent] = useState(false)
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -2217,12 +2356,26 @@ function PatientAuth({
     setLoading(true)
     try {
       if (creatingAccount) {
-        const currentUser = auth.currentUser
-        if (currentUser?.isAnonymous) {
-          await linkWithCredential(currentUser, EmailAuthProvider.credential(email.trim(), password))
-        } else {
-          await createUserWithEmailAndPassword(auth, email.trim(), password)
+        const registration: PatientRegistration = {
+          name: patientDetails.name.trim(),
+          mobileNumber: patientDetails.mobileNumber.trim(),
+          hospitalId,
+          department,
+          requestedDate,
+          reason: reason.trim(),
+          shareConsent,
+          recordsConsent,
         }
+        const currentUser = auth.currentUser
+        let appointmentTrackingId: string
+        if (currentUser?.isAnonymous) {
+          const result = await linkWithCredential(currentUser, EmailAuthProvider.credential(email.trim(), password), registration)
+          appointmentTrackingId = result.appointmentTrackingId
+        } else {
+          const result = await createUserWithEmailAndPassword(auth, email.trim(), password, registration)
+          appointmentTrackingId = result.appointmentTrackingId
+        }
+        onDone(appointmentTrackingId)
       } else {
         const credential = await signInWithEmailAndPassword(auth, email.trim(), password)
         const token = await getIdTokenResult(credential.user)
@@ -2230,8 +2383,8 @@ function PatientAuth({
           await signOut(auth)
           throw new Error('This is a staff account. Please use Staff login instead.')
         }
+        onDone()
       }
-      onDone()
     } catch (reason) {
       const code = (reason as { code?: string }).code
       const message = code === 'auth/email-already-in-use'
@@ -2241,7 +2394,7 @@ function PatientAuth({
         : code === 'auth/invalid-credential'
           ? 'Email or password is incorrect.'
           : code === 'auth/weak-password'
-            ? 'Choose a password with at least 6 characters.'
+            ? 'Choose a password with at least 8 characters.'
             : reason instanceof Error ? reason.message : 'Unable to access your account.'
       onError(message)
     } finally {
@@ -2252,25 +2405,38 @@ function PatientAuth({
   return (
     <main className="login-page">
       <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to patient check-in</button>
-      <div className="login-card">
+      <div className={`login-card${creatingAccount ? ' registration-card' : ''}`}>
         <span className="login-mark"><HeartPulse size={22} /></span>
         <div className="eyebrow"><span className="eyebrow-line" /> PATIENT ACCOUNT</div>
-        <h1>{creatingAccount ? 'Your care, in one place.' : 'Welcome back.'}</h1>
+        <h1>{creatingAccount ? 'Create your account.' : 'Welcome back.'}</h1>
         <p>{creatingAccount
           ? auth?.currentUser?.isAnonymous
-            ? 'Create an account to link this anonymous session and keep its appointments and records connected.'
-            : 'Create an account to keep your visits connected.'
+            ? 'Add your details and request an appointment. The hospital will review it and assign a day and time.'
+            : 'Register with your details and send an appointment request to your chosen hospital.'
           : auth?.currentUser?.isAnonymous
             ? 'Signing in switches to your existing account. Data from this anonymous session is not transferred.'
             : 'Sign in to continue to CareFlow.'}</p>
         <form onSubmit={submit} className="login-form">
+          {creatingAccount && <>
+            <div className="login-field-grid">
+              <label>Full name<input autoComplete="name" maxLength={200} required value={patientDetails.name} onChange={(event) => setPatientDetails((current) => ({ ...current, name: event.target.value }))} placeholder="Your full name" /></label>
+              <label>Mobile number<input type="tel" autoComplete="tel" minLength={7} maxLength={24} required value={patientDetails.mobileNumber} onChange={(event) => setPatientDetails((current) => ({ ...current, mobileNumber: event.target.value }))} placeholder="Your contact number" /></label>
+              <label>Hospital<select required value={hospitalId} disabled={!hospitalsReady} onChange={(event) => setHospitalId(event.target.value as HospitalId)}>{hospitals.map((hospital) => <option key={hospital.id} value={hospital.id}>{hospital.name}</option>)}</select></label>
+              <label>Department<select required value={department} onChange={(event) => setDepartment(event.target.value as Department)}>{departments.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+              <label>Preferred day<input type="date" min={getLocalDateInputValue()} required value={requestedDate} onChange={(event) => setRequestedDate(event.target.value)} /></label>
+              <label className="registration-reason">Reason for visit<textarea maxLength={500} required rows={2} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Briefly describe why you need an appointment" /></label>
+            </div>
+            <label className="registration-consent"><input type="checkbox" required checked={shareConsent} onChange={(event) => setShareConsent(event.target.checked)} /> I agree to share my details and appointment request with the selected hospital.</label>
+            <label className="registration-consent"><input type="checkbox" required checked={recordsConsent} onChange={(event) => setRecordsConsent(event.target.checked)} /> I agree to the hospital storing my medical records for this visit.</label>
+          </>}
           <label htmlFor="patient-email">Email address</label>
           <input id="patient-email" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />
           <label htmlFor="patient-password">Password</label>
-          <input id="patient-password" type="password" autoComplete={creatingAccount ? 'new-password' : 'current-password'} minLength={6} required value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 6 characters" />
-          <button className="button button-dark login-submit" disabled={loading || !authReady || !isBackendConfigured}>{loading ? <><span className="spinner" /> Please wait…</> : <>{creatingAccount ? 'Create patient account' : 'Sign in'} <ArrowRight size={16} /></>}</button>
+          <input id="patient-password" type="password" autoComplete={creatingAccount ? 'new-password' : 'current-password'} minLength={8} maxLength={128} required value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 8 characters" />
+          <button className="button button-dark login-submit" disabled={loading || !authReady || !isBackendConfigured}>{loading ? <><span className="spinner" /> Please wait…</> : <>{creatingAccount ? 'Register & send request' : 'Sign in'} <ArrowRight size={16} /></>}</button>
         </form>
         <div className="login-switch">{creatingAccount ? 'Already have an account?' : 'New to CareFlow?'} <button onClick={() => { setCreatingAccount(!creatingAccount); onError('') }}>{creatingAccount ? 'Sign in' : 'Create an account'}</button></div>
+        {creatingAccount && <p className="registration-note">Your appointment stays pending until the hospital confirms a date and time.</p>}
         <div className="login-security"><ShieldCheck size={15} /> Your account is securely managed by CareFlow</div>
       </div>
     </main>
@@ -2278,6 +2444,8 @@ function PatientAuth({
 }
 
 function StaffLogin({ authReady, onBack, onError }: { authReady: boolean; onBack: () => void; onError: (message: string) => void }) {
+  const navigate = useNavigate()
+  const hospitals = useHospitals()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -2300,7 +2468,7 @@ function StaffLogin({ authReady, onBack, onError }: { authReady: boolean; onBack
         await signOut(auth)
         throw new Error('This staff account has no valid role. Contact your administrator.')
       }
-      if (!getHospital(token.claims.hospitalId)) {
+      if (!getHospital(hospitals, token.claims.hospitalId)) {
         await signOut(auth)
         throw new Error('This staff account has no valid hospital assignment. Contact your administrator.')
       }
@@ -2327,10 +2495,124 @@ function StaffLogin({ authReady, onBack, onError }: { authReady: boolean; onBack
           <input id="staff-password" type="password" autoComplete="current-password" minLength={6} required value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Your password" />
           <button className="button button-dark login-submit" disabled={loading || !authReady || !isBackendConfigured}>{loading ? <><span className="spinner" /> Signing in…</> : <>Sign in to dashboard <ArrowRight size={16} /></>}</button>
         </form>
+        <div className="login-switch">New staff member? <button onClick={() => navigate(viewPaths['staff-access-request'])}>Request access</button></div>
+        <div className="login-switch">Administrator? <button onClick={() => navigate(viewPaths.admin)}>Admin login</button></div>
         <div className="login-security"><ShieldCheck size={15} /> Secure access for hospital staff</div>
       </div>
     </main>
   )
+}
+
+function AdminLogin({ authReady, onBack, onError }: { authReady: boolean; onBack: () => void; onError: (message: string) => void }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!auth) {
+      onError('The local CareFlow server is not available. Start it with `npm run start`, then try again.')
+      return
+    }
+    setLoading(true)
+    try {
+      const credential = await signInWithEmailAndPassword(auth, email.trim(), password)
+      const token = await getIdTokenResult(credential.user)
+      if (token.claims.role !== 'admin') {
+        await signOut(auth)
+        throw new Error('This account is not an administrator. Use Staff login or contact your system administrator.')
+      }
+      onError('')
+    } catch (reason) {
+      const code = (reason as { code?: string }).code
+      onError(code === 'auth/invalid-credential' ? 'Email or password is incorrect.' : reason instanceof Error ? reason.message : 'Unable to sign in.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return <main className="login-page">
+    <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to patient check-in</button>
+    <div className="login-card">
+      <span className="login-mark"><ShieldCheck size={22} /></span>
+      <div className="eyebrow"><span className="eyebrow-line" /> ADMINISTRATOR ACCESS</div>
+      <h1>Administrator login.</h1>
+      <p>Sign in to review and approve staff access requests across hospitals.</p>
+      <form onSubmit={submit} className="login-form">
+        <label htmlFor="admin-email">Administrator email</label>
+        <input id="admin-email" type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} />
+        <label htmlFor="admin-password">Password</label>
+        <input id="admin-password" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
+        <button className="button button-dark login-submit" disabled={loading || !authReady || !isBackendConfigured}>
+          {loading ? <><span className="spinner" /> Signing in…</> : <>Sign in as administrator <ArrowRight size={16} /></>}
+        </button>
+      </form>
+      <div className="login-security"><ShieldCheck size={15} /> Admin access is limited to provisioned accounts</div>
+    </div>
+  </main>
+}
+
+function StaffAccessRequestForm({ authReady, onBack, onError }: { authReady: boolean; onBack: () => void; onError: (message: string) => void }) {
+  const hospitals = useHospitals()
+  const hospitalsReady = useContext(HospitalsContext).ready
+  useRefreshHospitals(onError)
+  const [fullName, setFullName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [role, setRole] = useState<'receptionist' | 'doctor'>('receptionist')
+  const [hospitalId, setHospitalId] = useState<HospitalId>(hospitals[0].id)
+  const [loading, setLoading] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setLoading(true)
+    try {
+      await submitStaffAccessRequest({ fullName: fullName.trim(), email: email.trim(), password, role, hospitalId })
+      setSubmitted(true)
+      onError('')
+    } catch (reason) {
+      onError(reason instanceof Error ? `Unable to submit staff access request: ${reason.message}` : 'Unable to submit staff access request.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return <main className="login-page">
+    <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to staff sign in</button>
+    <div className="login-card">
+      <span className="login-mark"><Hospital size={22} /></span>
+      <div className="eyebrow"><span className="eyebrow-line" /> STAFF ACCESS REQUEST</div>
+      <h1>{submitted ? 'Request submitted.' : 'Join the care team.'}</h1>
+      {submitted ? <>
+        <p>Your request is pending administrator approval. You can sign in with your chosen password after it is approved.</p>
+        <button className="button button-dark login-submit" onClick={onBack}>Return to staff sign in <ArrowRight size={16} /></button>
+      </> : <>
+        <p>Provide your work details. An administrator must approve your account before staff access is enabled.</p>
+        <form onSubmit={submit} className="login-form">
+          <label htmlFor="staff-request-name">Full name</label>
+          <input id="staff-request-name" autoComplete="name" maxLength={200} required value={fullName} onChange={(event) => setFullName(event.target.value)} />
+          <label htmlFor="staff-request-email">Work email</label>
+          <input id="staff-request-email" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@hospital.org" />
+          <label htmlFor="staff-request-role">Requested role</label>
+          <select id="staff-request-role" required value={role} onChange={(event) => setRole(event.target.value as typeof role)}>
+            <option value="receptionist">Receptionist</option>
+            <option value="doctor">Doctor</option>
+          </select>
+          <label htmlFor="staff-request-hospital">Hospital</label>
+          <select id="staff-request-hospital" required value={hospitalId} disabled={!hospitalsReady} onChange={(event) => setHospitalId(event.target.value as HospitalId)}>
+            {hospitals.map((hospital) => <option key={hospital.id} value={hospital.id}>{hospital.name}</option>)}
+          </select>
+          <label htmlFor="staff-request-password">Choose a password</label>
+          <input id="staff-request-password" type="password" autoComplete="new-password" minLength={12} maxLength={128} required value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 12 characters" />
+          <button className="button button-dark login-submit" disabled={loading || !authReady || !isBackendConfigured}>
+            {loading ? <><span className="spinner" /> Submitting…</> : <>Submit access request <ArrowRight size={16} /></>}
+          </button>
+        </form>
+      </>}
+      <div className="login-security"><ShieldCheck size={15} /> Your account stays inactive until approved</div>
+    </div>
+  </main>
 }
 
 function PatientDetailsDialog({ ticket, details, onClose }: { ticket: Ticket; details: PatientDetails; onClose: () => void }) {
@@ -3083,7 +3365,135 @@ function PrivacyRequestsPage({ onBack, onError }: { onBack: () => void; onError:
   </main>
 }
 
-function StaffDashboard({ tickets, hospital, role, onOpenInbox, onOpenScheduler, onOpenDoctors, onOpenSearch, onOpenToday, onCreateRequest, onOpenPrivacy, onOpenNotifications, onLogout, onError }: {
+function AdminDashboard({ onOpenRequests, onHospitalAdded, onError }: {
+  onOpenRequests: () => void
+  onHospitalAdded: (hospital: HospitalInfo) => void
+  onError: (message: string) => void
+}) {
+  const hospitals = useHospitals()
+  const [pendingCount, setPendingCount] = useState<number | null>(null)
+  const [hospitalName, setHospitalName] = useState('')
+  const [creatingHospital, setCreatingHospital] = useState(false)
+  const [hospitalNotice, setHospitalNotice] = useState('')
+
+  useEffect(() => {
+    let active = true
+    const refresh = async () => {
+      try {
+        const result = await listStaffAccessRequests()
+        if (active) setPendingCount(result.requests.length)
+      } catch (reason) {
+        if (active) onError(reason instanceof Error ? `Unable to load staff access requests: ${reason.message}` : 'Unable to load staff access requests.')
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => { void refresh() }, 5000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [onError])
+
+  const addHospital = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setCreatingHospital(true)
+    setHospitalNotice('')
+    try {
+      const result = await createHospital(hospitalName.trim())
+      onHospitalAdded(result.hospital)
+      setHospitalName('')
+      setHospitalNotice(`${result.hospital.name} was added and is now available across CareFlow.`)
+      onError('')
+    } catch (reason) {
+      onError(reason instanceof Error ? `Unable to add hospital: ${reason.message}` : 'Unable to add hospital.')
+    } finally {
+      setCreatingHospital(false)
+    }
+  }
+
+  return <main className="dashboard-page staff-tool-page">
+    <div className="dashboard-heading">
+      <div><div className="eyebrow"><span className="eyebrow-line" /> ADMINISTRATOR PORTAL</div><h1>Administration<span>.</span></h1><p>Review and control staff access requests across all hospitals.</p></div>
+    </div>
+    <section className="staff-tool-card admin-access-card">
+      <span className="login-mark"><Users size={20} /></span>
+      <div><h2>Staff access requests</h2><p>{pendingCount === null ? 'Loading pending requests…' : `${pendingCount} pending request${pendingCount === 1 ? '' : 's'} across all hospitals.`}</p></div>
+      <button className="button button-dark" onClick={onOpenRequests}>Review requests <ArrowRight size={15} /></button>
+    </section>
+    <section className="staff-tool-card admin-hospital-card">
+      <h2>Manage hospitals</h2>
+      <p>Add a hospital by name. It will become selectable in patient registration, appointment requests, and staff access requests.</p>
+      <form className="login-form" onSubmit={(event) => void addHospital(event)}>
+        <label htmlFor="admin-hospital-name">Hospital name</label>
+        <input id="admin-hospital-name" minLength={2} maxLength={120} required value={hospitalName} onChange={(event) => setHospitalName(event.target.value)} placeholder="Enter a hospital name" />
+        <button className="button button-dark" disabled={creatingHospital}>{creatingHospital ? 'Adding…' : <>Add hospital <Plus size={15} /></>}</button>
+      </form>
+      {hospitalNotice && <div className="staff-note" role="status"><CheckCircle2 size={16} /><span>{hospitalNotice}</span></div>}
+      <ul className="admin-hospital-list">{hospitals.map((hospital) => <li key={hospital.id}><Hospital size={15} /><span>{hospital.name}</span></li>)}</ul>
+    </section>
+  </main>
+}
+
+function StaffAccessRequestsPage({ onBack, onError }: { onBack: () => void; onError: (message: string) => void }) {
+  const hospitals = useHospitals()
+  const [requests, setRequests] = useState<StaffAccessRequestData[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState('')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    let active = true
+    const refresh = async () => {
+      try {
+        const result = await listStaffAccessRequests()
+        if (active) {
+          setRequests(result.requests)
+          setLoading(false)
+        }
+      } catch (reason) {
+        if (active) {
+          setLoading(false)
+          onError(reason instanceof Error ? `Unable to load staff access requests: ${reason.message}` : 'Unable to load staff access requests.')
+        }
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => { void refresh() }, 5000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [onError])
+
+  const review = async (item: StaffAccessRequestData, decision: 'approve' | 'reject') => {
+    setBusyId(item.id)
+    try {
+      const result = await reviewStaffAccessRequest(item.id, decision)
+      setRequests((current) => current.filter((request) => request.id !== item.id))
+      setNotice(result.alreadyAdmin
+        ? `${item.email} already has administrator access at ${getHospital(hospitals, item.hospitalId)?.name ?? item.hospitalId}. The request was closed without changing that account.`
+        : decision === 'approve' ? `Access approved for ${item.email}.` : `Request rejected for ${item.email}.`)
+      onError('')
+    } catch (reason) {
+      onError(reason instanceof Error ? `Unable to ${decision} staff request: ${reason.message}` : `Unable to ${decision} staff request.`)
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  return <main className="dashboard-page staff-tool-page">
+    <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to dashboard</button>
+    <div className="dashboard-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> ACCESS CONTROL</div><h1>Staff access requests<span>.</span></h1><p>Only approve requests from staff you have verified.</p></div><span className="request-count">{requests.length} pending</span></div>
+    {notice && <div className="staff-note" role="status"><ShieldCheck size={17} /><span>{notice}</span></div>}
+    {loading ? <div className="appointment-empty"><span className="spinner dark-spinner" /><p>Loading staff requests…</p></div>
+      : requests.length === 0 ? <div className="appointment-empty"><span className="empty-icon"><ShieldCheck size={21} /></span><strong>No pending access requests</strong><p>New staff requests will appear here for administrator review.</p></div>
+        : <div className="request-inbox-list">{requests.map((item) => <article className="request-card" key={item.id}>
+          <div className="request-card-heading"><div><span className="appointment-status-pill pending">Pending</span><h2>{item.fullName}</h2><p>{item.email} · {item.role === 'doctor' ? 'Doctor' : 'Receptionist'}</p></div>
+            <span className="request-date">{getHospital(hospitals, item.hospitalId)?.name ?? item.hospitalId}</span></div>
+          <p className="checkin-description">Submitted {new Date(item.createdAt).toLocaleString()}</p>
+          <div className="request-actions">
+            <button className="button button-dark" disabled={busyId === item.id} onClick={() => void review(item, 'approve')}>{busyId === item.id ? 'Saving…' : <>Approve account <Check size={15} /></>}</button>
+            <button className="button button-decline" disabled={busyId === item.id} onClick={() => void review(item, 'reject')}>Reject <X size={15} /></button>
+          </div>
+        </article>)}</div>}
+  </main>
+}
+
+function StaffDashboard({ tickets, hospital, role, onOpenInbox, onOpenScheduler, onOpenDoctors, onOpenSearch, onOpenToday, onCreateRequest, onOpenPrivacy, onOpenNotifications, onOpenStaffAccessRequests, onLogout, onError }: {
   tickets: Ticket[]
   hospital: Hospital | null
   role: StaffRole | null
@@ -3095,6 +3505,7 @@ function StaffDashboard({ tickets, hospital, role, onOpenInbox, onOpenScheduler,
   onCreateRequest: () => void
   onOpenPrivacy: () => void
   onOpenNotifications: () => void
+  onOpenStaffAccessRequests: () => void
   onLogout: () => void
   onError: (message: string) => void
 }) {
@@ -3159,6 +3570,7 @@ function StaffDashboard({ tickets, hospital, role, onOpenInbox, onOpenScheduler,
           <button className="button button-outline" onClick={onOpenSearch}>Patient search</button>
           <button className="button button-outline" onClick={onCreateRequest}><UserPlus size={14} /> Create request</button>
           {role === 'admin' && <button className="button button-outline" onClick={onOpenPrivacy}>Privacy requests</button>}
+          {role === 'admin' && <button className="button button-outline" onClick={onOpenStaffAccessRequests}>Staff access requests</button>}
           {(role === 'admin' || role === 'receptionist') && <button className="button button-outline" onClick={onOpenNotifications}>Patient messages</button>}
           <button className="button button-outline" onClick={onLogout}><LogOut size={15} /> Sign out</button>
         </div>

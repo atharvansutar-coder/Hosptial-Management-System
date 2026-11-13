@@ -224,12 +224,22 @@ h1, h2, h3, p { margin-top: 0; }
 .back-link { display: inline-flex; align-items: center; gap: 7px; border: 0; padding: 0; background: none; color: #70817a; font-size: 11px; cursor: pointer; }
 .back-link:hover { color: #246d5b; }
 .login-card { width: min(100%, 420px); margin: 29px auto 0; padding: 34px 38px 27px; border: 1px solid #e8eeea; border-radius: 12px; background: #fff; box-shadow: 0 14px 40px #2c503d0b; }
+.registration-card { width: min(100%, 620px); }
 .login-mark { width: 42px; height: 42px; margin-bottom: 25px; display: grid; place-items: center; background: #e7f2eb; color: #4c8b71; border-radius: 11px; }
 .login-card h1 { margin: 14px 0 7px; color: #29483d; font: 700 28px Manrope, sans-serif; letter-spacing: -1px; }
 .login-card > p { margin: 0 0 24px; color: #87948e; font-size: 12px; }
 .login-form { display: flex; flex-direction: column; }
 .login-form label { color: #52675e; font-size: 10px; font-weight: 700; margin: 0 0 7px; }
-.login-form input { height: 41px; margin: 0 0 17px; padding: 0 11px; border: 1px solid #e3e9e5; border-radius: 6px; color: #32473e; font-size: 11px; }
+.login-form input, .login-form select { height: 41px; margin: 0 0 17px; padding: 0 11px; border: 1px solid #e3e9e5; border-radius: 6px; background: #fff; color: #32473e; font-size: 11px; }
+.login-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 13px; margin-bottom: 7px; }
+.login-field-grid > label { min-width: 0; margin-bottom: 12px; }
+.login-field-grid input, .login-field-grid select, .login-field-grid textarea { display: block; width: 100%; margin: 6px 0 0; padding: 0 10px; border: 1px solid #e3e9e5; border-radius: 6px; background: #fff; color: #32473e; font-size: 11px; }
+.login-field-grid input, .login-field-grid select { height: 41px; }
+.login-field-grid textarea { min-height: 64px; padding: 10px; resize: vertical; }
+.login-field-grid .registration-reason { grid-column: 1 / -1; }
+.login-form .registration-consent { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 10px; color: #73827a; font-size: 10px; font-weight: 500; line-height: 1.5; }
+.login-form .registration-consent input { width: 14px; height: 14px; flex: 0 0 auto; margin: 0; padding: 0; accent-color: #246d5b; }
+.registration-note { margin: 13px 0 0 !important; color: #6d8076 !important; font-size: 10px !important; text-align: center; }
 .login-form input::placeholder { color: #aab2ad; }
 .login-submit { width: 100%; margin-top: 4px; }
 .login-switch { margin-top: 19px; text-align: center; color: #87938d; font-size: 10px; }
@@ -425,6 +435,18 @@ h1, h2, h3, p { margin-top: 0; }
 .staff-tool-page > .back-link { margin-bottom: 19px; }
 .staff-tool-card { margin-bottom: 17px; padding: 19px; border: 1px solid #e7ece8; border-radius: 9px; background: #fff; }
 .staff-tool-card h2 { margin: 0 0 13px; color: #3b594e; font: 700 14px Manrope, sans-serif; }
+.admin-access-card { display: flex; align-items: center; gap: 16px; max-width: 720px; padding: 24px; }
+.admin-access-card .login-mark { flex: 0 0 auto; margin: 0; }
+.admin-access-card h2 { margin-bottom: 5px; }
+.admin-access-card p { margin: 0; color: #87948e; font-size: 11px; }
+.admin-access-card .button { margin-left: auto; }
+.admin-hospital-card { max-width: 720px; }
+.admin-hospital-card > p { max-width: 520px; margin: -4px 0 17px; color: #87948e; font-size: 11px; line-height: 1.6; }
+.admin-hospital-card .login-form { max-width: 380px; }
+.admin-hospital-card .login-form .button { align-self: flex-start; gap: 7px; }
+.admin-hospital-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 17px 0 0; padding: 0; list-style: none; }
+.admin-hospital-list li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 10px 11px; border: 1px solid #e7ece8; border-radius: 6px; color: #52675e; font-size: 10px; }
+.admin-hospital-list svg { flex: 0 0 auto; color: #719a82; }
 .slot-create-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; align-items: end; gap: 11px; }
 .slot-create-form .patient-field { min-width: 0; }
 .slot-create-form .button { min-height: 37px; font-size: 9px; }
@@ -582,6 +604,11 @@ h1, h2, h3, p { margin-top: 0; }
   .footer button { font-size: 8px; }
   .login-page, .tracking-page, .dashboard-page { padding: 31px 16px 45px; min-height: calc(100vh - 125px); }
   .login-card { margin-top: 22px; padding: 28px 23px 23px; }
+  .admin-access-card { align-items: flex-start; flex-wrap: wrap; padding: 19px; }
+  .admin-access-card .button { width: 100%; margin-left: 0; }
+  .admin-hospital-list { grid-template-columns: 1fr; }
+  .login-field-grid { grid-template-columns: 1fr; }
+  .login-field-grid .registration-reason { grid-column: auto; }
   .tracking-layout { grid-template-columns: 1fr; gap: 12px; margin-top: 21px; }
   .tracking-card { padding: 21px; }
   .ticket-code { font-size: 39px; }

@@ -12,6 +12,32 @@ export type User = {
   isAnonymous: boolean
 }
 
+export type PatientRegistration = {
+  name: string
+  mobileNumber: string
+  hospitalId: string
+  department: string
+  requestedDate: string
+  reason: string
+  shareConsent: boolean
+  recordsConsent: boolean
+}
+
+export type StaffAccessRequest = {
+  id: string
+  email: string
+  fullName: string
+  role: 'receptionist' | 'doctor'
+  hospitalId: string
+  status: 'pending'
+  createdAt: string
+}
+
+export type HospitalInfo = {
+  id: string
+  name: string
+}
+
 export type MedicalDocumentCategory =
   | 'Blood Test'
   | 'Urine Test'
@@ -123,13 +149,26 @@ export async function signInAnonymously(_auth?: unknown) {
   return { user: result.user }
 }
 
-export async function createUserWithEmailAndPassword(_auth: unknown, email: string, password: string) {
-  const result = await request<{ user: BackendUser }>('/auth/register', {
+export async function createUserWithEmailAndPassword(_auth: unknown, email: string, password: string, registration: PatientRegistration) {
+  const result = await request<{ user: BackendUser; appointmentTrackingId: string }>('/auth/register', {
     method: 'POST',
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({
+      email,
+      password,
+      registration: {
+        name: registration.name,
+        mobileNumber: registration.mobileNumber,
+        hospitalId: registration.hospitalId,
+        department: registration.department,
+        requestedDate: registration.requestedDate,
+        reason: registration.reason,
+      },
+      shareConsent: registration.shareConsent,
+      recordsConsent: registration.recordsConsent,
+    }),
   })
   setCurrentUser(result.user)
-  return { user: result.user }
+  return { user: result.user, appointmentTrackingId: result.appointmentTrackingId }
 }
 
 export async function signInWithEmailAndPassword(_auth: unknown, email: string, password: string) {
@@ -141,13 +180,25 @@ export async function signInWithEmailAndPassword(_auth: unknown, email: string, 
   return { user: result.user }
 }
 
-export async function linkWithCredential(user: User, credential: { email: string; password: string }) {
-  const result = await request<{ user: BackendUser }>('/auth/link', {
+export async function linkWithCredential(_user: User, credential: { email: string; password: string }, registration: PatientRegistration) {
+  const result = await request<{ user: BackendUser; appointmentTrackingId: string }>('/auth/link', {
     method: 'POST',
-    body: JSON.stringify({ ...credential, uid: user.uid }),
+    body: JSON.stringify({
+      ...credential,
+      registration: {
+        name: registration.name,
+        mobileNumber: registration.mobileNumber,
+        hospitalId: registration.hospitalId,
+        department: registration.department,
+        requestedDate: registration.requestedDate,
+        reason: registration.reason,
+      },
+      shareConsent: registration.shareConsent,
+      recordsConsent: registration.recordsConsent,
+    }),
   })
   setCurrentUser(result.user)
-  return { user: result.user }
+  return { user: result.user, appointmentTrackingId: result.appointmentTrackingId }
 }
 
 export async function signOut(_auth?: unknown) {
@@ -191,6 +242,41 @@ export async function markNotificationHandled(id: string) {
 
 export async function markAppointmentNoShow(appointmentId: string) {
   return request<{ ok: boolean }>(`/appointments/${encodeURIComponent(appointmentId)}/no-show`, { method: 'POST', body: '{}' })
+}
+
+export async function submitStaffAccessRequest(input: {
+  email: string
+  password: string
+  fullName: string
+  role: 'receptionist' | 'doctor'
+  hospitalId: string
+}) {
+  return request<{ request: StaffAccessRequest }>('/staff-access-requests', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function listStaffAccessRequests() {
+  return request<{ requests: StaffAccessRequest[] }>('/staff-access-requests')
+}
+
+export async function reviewStaffAccessRequest(id: string, decision: 'approve' | 'reject') {
+  return request<{ status: 'approved' | 'rejected'; alreadyAdmin: boolean }>(`/staff-access-requests/${encodeURIComponent(id)}/${decision}`, {
+    method: 'POST',
+    body: '{}',
+  })
+}
+
+export async function listHospitals() {
+  return request<{ hospitals: HospitalInfo[] }>('/hospitals')
+}
+
+export async function createHospital(name: string) {
+  return request<{ hospital: HospitalInfo }>('/hospitals', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
 }
 
 export function onAuthStateChanged(_auth: unknown, listener: (user: User | null) => void) {

@@ -11,7 +11,7 @@ const testDataDirectory = await mkdtemp(join(tmpdir(), 'careflow-vitest-'))
 process.env.DATA_DIR = testDataDirectory
 process.env.SQLITE_PATH = join(testDataDirectory, 'careflow.db')
 
-const [{ default: app }, { database, writeDocument, listDocuments }, { runReminderAndFollowupSweep }] = await Promise.all([
+const [{ default: app }, { database, writeDocument, listDocuments }, { queueAppointmentUpdate, runReminderAndFollowupSweep }] = await Promise.all([
   import('../app'),
   import('../db'),
   import('../smart'),
@@ -60,6 +60,8 @@ function makeAppointment(ownerUid: string, hospitalId: string, status = 'pending
   }
 }
 
+let hospitalTestAdmin: Awaited<ReturnType<typeof addStaff>> | null = null
+
 describe('local CareFlow API', () => {
   beforeAll(() => {
     database.pragma('foreign_keys = ON')
@@ -73,6 +75,217 @@ describe('local CareFlow API', () => {
     expect(response.headers['cross-origin-opener-policy']).toBeUndefined()
     expect(response.headers['origin-agent-cluster']).toBeUndefined()
     expect(response.headers['strict-transport-security']).toBeUndefined()
+  })
+
+  it('creates a patient profile and pending appointment visible to the assigned hospital staff', async () => {
+    const patient = supertest.agent(app)
+    const registration = await patient.post('/api/auth/register').send({
+      email: 'new-patient@example.test',
+      password,
+      registration: {
+        name: 'New Test Patient',
+        mobileNumber: '+919900000010',
+        hospitalId: 'central-city-hospital',
+        department: 'General medicine',
+        requestedDate: '2026-11-20',
+        reason: 'Routine check-up',
+      },
+      shareConsent: true,
+      recordsConsent: true,
+    })
+    expect(registration.status).toBe(201)
+    expect(registration.body.appointmentTrackingId).toBeTruthy()
+    const patientId = registration.body.user.uid as string
+    const staff = await addStaff('registration-review@example.test', 'receptionist', 'central-city-hospital')
+    const requests = await staff.get('/api/data/appointments')
+    const appointment = requests.body.docs.find((entry: { data: { patientId: string } }) => entry.data.patientId === patientId)
+    expect(appointment?.data).toMatchObject({
+      hospitalId: 'central-city-hospital',
+      status: 'pending',
+      requestedDate: '2026-11-20',
+      department: 'General medicine',
+      patientMobile: '+919900000010',
+      reason: 'Routine check-up',
+    })
+    const tracking = await supertest(app).get(`/api/public/appointment-tracking/${registration.body.appointmentTrackingId}`)
+    expect(tracking.body.data).toMatchObject({ status: 'pending', requestedDate: '2026-11-20' })
+    const profile = await staff.get(`/api/data/patients/${patientId}`)
+    expect(profile.body.data.details).toEqual({ name: 'New Test Patient', mobileNumber: '+919900000010' })
+  })
+
+  it('does not create an account when registration consent is missing', async () => {
+    const response = await supertest(app).post('/api/auth/register').send({
+      email: 'no-consent@example.test',
+      password,
+      registration: {
+        name: 'No Consent Patient',
+        mobileNumber: '+919900000011',
+        hospitalId: 'central-city-hospital',
+        department: 'General medicine',
+        requestedDate: '2026-11-20',
+        reason: 'Routine check-up',
+      },
+      shareConsent: false,
+      recordsConsent: true,
+    })
+    expect(response.status).toBe(400)
+    expect(database.prepare('SELECT id FROM users WHERE email = ?').get('no-consent@example.test')).toBeUndefined()
+  })
+
+  it('keeps staff requests inactive until an admin approves them', async () => {
+    const request = await supertest(app).post('/api/staff-access-requests').send({
+      email: 'new-staff@example.test',
+      password,
+      fullName: 'New Staff Member',
+      role: 'receptionist',
+      hospitalId: 'central-city-hospital',
+    })
+    expect(request.status).toBe(201)
+    expect(JSON.stringify(request.body)).not.toContain(password)
+    expect(database.prepare('SELECT id FROM users WHERE email = ?').get('new-staff@example.test')).toBeUndefined()
+    const secondHospitalRequest = await supertest(app).post('/api/staff-access-requests').send({
+      email: 'riverside-staff@example.test',
+      password,
+      fullName: 'Riverside Staff Member',
+      role: 'doctor',
+      hospitalId: 'riverside-general',
+    })
+    expect(secondHospitalRequest.status).toBe(201)
+
+    const patient = supertest.agent(app)
+    await patient.post('/api/auth/register').send({
+      email: 'staff-review-patient@example.test',
+      password,
+      registration: {
+        name: 'Test Patient',
+        mobileNumber: '+919900000012',
+        hospitalId: 'central-city-hospital',
+        department: 'General medicine',
+        requestedDate: '2026-11-20',
+        reason: 'Routine check-up',
+      },
+      shareConsent: true,
+      recordsConsent: true,
+    })
+    expect((await patient.get('/api/staff-access-requests')).status).toBe(403)
+
+    const admin = await addStaff('staff-approval-admin@example.test', 'admin', 'central-city-hospital')
+    hospitalTestAdmin = admin
+    const pending = await admin.get('/api/staff-access-requests')
+    expect(pending.body.requests).toHaveLength(2)
+    expect(pending.body.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ email: 'new-staff@example.test', role: 'receptionist', hospitalId: 'central-city-hospital' }),
+      expect.objectContaining({ email: 'riverside-staff@example.test', role: 'doctor', hospitalId: 'riverside-general' }),
+    ]))
+    expect(JSON.stringify(pending.body)).not.toContain(password)
+
+    const decision = await admin.post(`/api/staff-access-requests/${request.body.request.id}/approve`).send({})
+    expect(decision.status).toBe(200)
+    const staffLogin = await supertest.agent(app).post('/api/auth/login').send({ email: 'new-staff@example.test', password })
+    expect(staffLogin.status).toBe(200)
+    expect(staffLogin.body.user).toMatchObject({ role: 'receptionist', hospitalId: 'central-city-hospital' })
+  })
+
+  it('lets only administrators add hospitals and uses new hospitals throughout registration and notifications', async () => {
+    const listed = await supertest(app).get('/api/hospitals')
+    expect(listed.status).toBe(200)
+    expect(listed.headers['cache-control']).toBe('no-store')
+    expect(listed.body.hospitals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'central-city-hospital', name: 'Central City Hospital' }),
+      expect.objectContaining({ id: 'riverside-general', name: 'Riverside General Hospital' }),
+      expect.objectContaining({ id: 'northside-medical-center', name: 'Northside Medical Center' }),
+    ]))
+
+    expect((await supertest(app).post('/api/hospitals').send({ name: 'Pine Valley Hospital' })).status).toBe(401)
+    if (!hospitalTestAdmin) throw new Error('Hospital test administrator was not initialized.')
+    const admin = hospitalTestAdmin
+    const created = await admin.post('/api/hospitals').send({ name: 'Pine Valley Hospital' })
+    expect(created.status).toBe(201)
+    expect(created.body.hospital).toEqual({ id: 'pine-valley-hospital', name: 'Pine Valley Hospital' })
+    expect((await admin.post('/api/hospitals').send({ name: 'pine valley hospital' })).status).toBe(409)
+    expect((await supertest(app).get('/api/hospitals')).body.hospitals)
+      .toEqual(expect.arrayContaining([created.body.hospital]))
+
+    const patient = supertest.agent(app)
+    const registration = await patient.post('/api/auth/register').send({
+      email: 'new-hospital-patient@example.test',
+      password,
+      registration: {
+        name: 'Pine Valley Patient',
+        mobileNumber: '+919900000014',
+        hospitalId: created.body.hospital.id,
+        department: 'General medicine',
+        requestedDate: '2026-11-20',
+        reason: 'Routine check-up',
+      },
+      shareConsent: true,
+      recordsConsent: true,
+    })
+    expect(registration.status).toBe(201)
+    expect((await patient.post('/api/hospitals').send({ name: 'Patient Hospital' })).status).toBe(403)
+    expect(database.prepare('SELECT hospitalId FROM appointments WHERE ownerUid = ?')
+      .get(registration.body.user.uid)).toEqual({ hospitalId: created.body.hospital.id })
+
+    const staffRequest = await supertest(app).post('/api/staff-access-requests').send({
+      email: 'pine-valley-staff@example.test',
+      password,
+      fullName: 'Pine Valley Staff',
+      role: 'receptionist',
+      hospitalId: created.body.hospital.id,
+    })
+    expect(staffRequest.status).toBe(201)
+    const cleanup = await admin.post(`/api/staff-access-requests/${staffRequest.body.request.id}/reject`).send({})
+    expect(cleanup.status).toBe(200)
+
+    queueAppointmentUpdate({
+      id: randomUUID(),
+      hospitalId: created.body.hospital.id,
+      patientId: registration.body.user.uid,
+      patientMobile: '+919900000014',
+      status: 'confirmed',
+      assignedDate: '2026-11-20',
+      assignedTime: '09:00',
+    })
+    const notification = listDocuments('notifications').find(({ data }) =>
+      data.appointmentId && String(data.message).includes('Pine Valley Hospital'),
+    )
+    expect(notification?.data.message).toContain('Pine Valley Hospital')
+  })
+
+  it('does not allow public staff requests for administrator roles', async () => {
+    const response = await supertest(app).post('/api/staff-access-requests').send({
+      email: 'public-admin@example.test',
+      password,
+      fullName: 'Public Admin',
+      role: 'admin',
+      hospitalId: 'central-city-hospital',
+    })
+    expect(response.status).toBe(400)
+    expect(database.prepare('SELECT id FROM users WHERE email = ?').get('public-admin@example.test')).toBeUndefined()
+  })
+
+  it('closes a duplicate same-hospital admin staff request without downgrading the admin account', async () => {
+    const request = await supertest(app).post('/api/staff-access-requests').send({
+      email: 'existing-request-admin@example.test',
+      password: 'Request-passphrase-2026',
+      fullName: 'Existing Administrator',
+      role: 'receptionist',
+      hospitalId: 'central-city-hospital',
+    })
+    expect(request.status).toBe(201)
+    const admin = await addStaff('existing-request-admin@example.test', 'admin', 'central-city-hospital')
+    const originalUser = database.prepare('SELECT id, passwordHash FROM users WHERE email = ? COLLATE NOCASE').get('existing-request-admin@example.test') as
+      { id: string; passwordHash: string }
+
+    const decision = await admin.post(`/api/staff-access-requests/${request.body.request.id}/approve`).send({})
+    expect(decision.status).toBe(200)
+    expect(decision.body).toEqual({ status: 'approved', alreadyAdmin: true })
+    expect(database.prepare('SELECT id, role, passwordHash FROM users WHERE email = ? COLLATE NOCASE').get('existing-request-admin@example.test'))
+      .toEqual({ id: originalUser.id, role: 'admin', passwordHash: originalUser.passwordHash })
+    const remaining = await admin.get('/api/staff-access-requests')
+    expect(remaining.body.requests).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: request.body.request.id }),
+    ]))
   })
 
   afterAll(async () => {
