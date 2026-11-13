@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import supertest from 'supertest'
 import bcrypt from 'bcrypt'
+import jwt from 'jsonwebtoken'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -658,16 +659,22 @@ describe('local CareFlow API', () => {
     expect(mismatchedImage.status).toBe(400)
   })
 
-  it('stores patient-profile PDFs independently from visits and enforces hospital access', async () => {
+  it('stores patient-profile PDFs and images independently from visits and enforces access', async () => {
     if (!hospitalTestAdmin || !northHospitalTestAdmin) throw new Error('Hospital test staff accounts were not initialized.')
     const staff = hospitalTestAdmin
     const otherHospital = northHospitalTestAdmin
     const patientId = randomUUID()
+    database.prepare(`
+      INSERT INTO users (id, email, passwordHash, role, hospitalId, isAnonymous, active, createdAt)
+      VALUES (?, ?, NULL, 'patient', 'central-city-hospital', 0, 1, ?)
+    `).run(patientId, `profile-documents-${patientId}@example.test`, new Date().toISOString())
     writeDocument('patients', patientId, {
       ownerUid: patientId,
       hospitalIds: ['central-city-hospital'],
       details: { name: 'Profile Document Patient', mobileNumber: '+15555550199' },
     })
+    const patientCookie = `careflow_session=${jwt.sign({ uid: patientId }, process.env.JWT_SECRET!, { expiresIn: '1h' })}`
+    const patient = supertest.agent(app)
     const validPdf = Buffer.from('%PDF-1.4\n% patient profile test\n')
     const upload = await staff.post('/api/patient-documents')
       .field('hospitalId', 'central-city-hospital')
@@ -698,6 +705,45 @@ describe('local CareFlow API', () => {
     expect(download.status).toBe(200)
     expect(download.body).toEqual(validPdf)
 
+    const profileImages = [
+      { bytes: Buffer.from([0xff, 0xd8, 0xff, 0x00]), filename: 'profile-xray.jpg', contentType: 'image/jpeg' },
+      { bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]), filename: 'profile-scan.png', contentType: 'image/png' },
+    ] as const
+    for (const image of profileImages) {
+      const imageUpload = await staff.post('/api/patient-documents')
+        .field('hospitalId', 'central-city-hospital')
+        .field('patientId', patientId)
+        .field('category', 'X-ray')
+        .attach('file', image.bytes, { filename: image.filename, contentType: image.contentType })
+      expect(imageUpload.status).toBe(201)
+      expect(imageUpload.body.contentType).toBe(image.contentType)
+
+      const patientDocument = await patient.get(`/api/data/patientDocuments/${imageUpload.body.id}`).set('Cookie', patientCookie)
+      expect(patientDocument.status).toBe(200)
+      expect(patientDocument.body.data.name).toBe(image.filename)
+      const patientDownload = await patient.get(`/api/files?path=${encodeURIComponent(imageUpload.body.path)}`).set('Cookie', patientCookie)
+        .buffer(true)
+        .parse((response, callback) => {
+          const chunks: Buffer[] = []
+          response.on('data', (chunk: Buffer) => chunks.push(chunk))
+          response.on('end', () => callback(null, Buffer.concat(chunks)))
+        })
+      expect(patientDownload.status).toBe(200)
+      expect(patientDownload.headers['content-type']).toContain(image.contentType)
+      expect(patientDownload.body).toEqual(image.bytes)
+    }
+
+    expect((await patient.get(`/api/data/patientDocuments/${upload.body.id}`).set('Cookie', patientCookie)).status).toBe(200)
+    const patientPdfDownload = await patient.get(`/api/files?path=${encodeURIComponent(upload.body.path)}`)
+      .set('Cookie', patientCookie)
+      .buffer(true)
+      .parse((response, callback) => {
+        const chunks: Buffer[] = []
+        response.on('data', (chunk: Buffer) => chunks.push(chunk))
+        response.on('end', () => callback(null, Buffer.concat(chunks)))
+      })
+    expect(patientPdfDownload.status).toBe(200)
+    expect(patientPdfDownload.body).toEqual(validPdf)
     expect((await otherHospital.get(`/api/files?path=${encodeURIComponent(upload.body.path)}`)).status).toBe(403)
     expect((await otherHospital.get(`/api/data/patientDocuments/${upload.body.id}`)).status).toBe(403)
 

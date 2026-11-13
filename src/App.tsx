@@ -2082,7 +2082,7 @@ function PatientProfileDocuments({ patient, hospital, patientView, canUpload, on
           name: data.name,
           path: data.path,
           uploadedAt,
-          contentType: 'application/pdf',
+          contentType: typeof data.contentType === 'string' ? data.contentType : 'application/pdf',
           category: medicalDocumentCategories.includes(data.category as MedicalDocumentCategory)
             ? data.category as MedicalDocumentCategory
             : undefined,
@@ -2106,11 +2106,12 @@ function PatientProfileDocuments({ patient, hospital, patientView, canUpload, on
     try {
       if (documents.length + files.length > 100) throw new Error('A patient profile can contain at most 100 documents.')
       for (const file of files) {
-        if (!file.name.toLowerCase().endsWith('.pdf') || file.size > 10 * 1024 * 1024) {
-          throw new Error(`${file.name} must be a PDF no larger than 10 MB.`)
+        validateMedicalDocuments([file])
+        const contentType = medicalDocumentContentType(file.name)
+        const signature = new Uint8Array(await file.slice(0, 1024).arrayBuffer())
+        if (!contentType || !hasValidMedicalDocumentSignature(contentType, signature)) {
+          throw new Error(`${file.name} is not a valid PDF, JPG, or PNG document.`)
         }
-        const signature = new TextDecoder('ascii').decode(await file.slice(0, 1024).arrayBuffer())
-        if (!signature.includes('%PDF-')) throw new Error(`${file.name} is not a valid PDF document.`)
       }
       setSaving(true)
       for (let index = 0; index < files.length; index += 1) {
@@ -2132,9 +2133,9 @@ function PatientProfileDocuments({ patient, hospital, patientView, canUpload, on
 
   return <section className="staff-tool-card patient-profile-documents">
     <h2><FileText size={17} /> Patient documents</h2>
-    <p>Profile PDFs are stored independently from visit records.</p>
+    <p>Profile documents are stored independently from visits and are visible to the patient in My Records.</p>
     {canUpload && hospital && <form className="record-upload-form" onSubmit={(event) => void submit(event)}>
-      <label className="patient-field">PDF documents (up to 10 MB each)<input type="file" accept="application/pdf,.pdf" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /></label>
+      <label className="patient-field">PDF, JPG, or PNG documents (up to 10 MB each)<input type="file" accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /></label>
       <label className="patient-field">Document category<select value={category} onChange={(event) => setCategory(event.target.value as MedicalDocumentCategory)}>{medicalDocumentCategories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
       <label className="patient-field record-upload-description">Description (optional)<input maxLength={500} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
       {saving && <progress max={100} value={progress} aria-label="Patient document upload progress" />}
@@ -2142,7 +2143,7 @@ function PatientProfileDocuments({ patient, hospital, patientView, canUpload, on
     </form>}
     {loading ? <p><span className="spinner dark-spinner" /> Loading documents…</p>
       : documents.length ? <RecordPdfList files={documents} onError={onError} />
-        : <p>No patient profile PDFs have been uploaded.</p>}
+        : <p>No patient profile documents have been uploaded.</p>}
   </section>
 }
 

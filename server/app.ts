@@ -329,10 +329,12 @@ app.post('/api/patient-documents', requireAuth, writeLimit, medicalDocumentUploa
     response.status(404).json({ error: 'The patient profile was not found at this hospital.' })
     return
   }
+  const extension = request.file.originalname.toLowerCase().split('.').pop() ?? ''
+  const expectedType = medicalDocumentTypeByExtension[extension as keyof typeof medicalDocumentTypeByExtension]
   const detectedContentType = sniffMedicalDocumentType(request.file.buffer)
-  if (!request.file.originalname.toLowerCase().endsWith('.pdf') || detectedContentType !== 'application/pdf'
-    || (request.file.mimetype !== 'application/pdf' && request.file.mimetype !== 'application/octet-stream')) {
-    response.status(400).json({ error: 'Only valid PDF files can be uploaded to a patient profile.' })
+  if (!expectedType || detectedContentType !== expectedType.contentType
+    || (request.file.mimetype !== expectedType.contentType && request.file.mimetype !== 'application/octet-stream')) {
+    response.status(400).json({ error: 'Only valid PDF, JPG, JPEG, or PNG files can be uploaded to a patient profile.' })
     return
   }
   if (latestRecordsConsent(patientId)?.granted === false) {
@@ -340,7 +342,7 @@ app.post('/api/patient-documents', requireAuth, writeLimit, medicalDocumentUploa
     return
   }
   const id = randomUUID()
-  const relativePath = `records/${hospitalId}/${patientId}/profile-${id}.pdf`
+  const relativePath = `records/${hospitalId}/${patientId}/profile-${id}.${expectedType.extension}`
   const root = dataDirectory
   const absolutePath = resolve(root, relativePath)
   if (!absolutePath.startsWith(`${root}${sep}`)) {
@@ -355,9 +357,9 @@ app.post('/api/patient-documents', requireAuth, writeLimit, medicalDocumentUploa
     patientId,
     ownerUid: patientId,
     hospitalId,
-    name: (originalName ?? '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 180) || 'medical-document.pdf',
+    name: (originalName ?? '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 180) || `medical-document.${expectedType.extension}`,
     path: relativePath,
-    contentType: 'application/pdf',
+    contentType: expectedType.contentType,
     category,
     description,
     uploadedByUserId: request.user.uid,
