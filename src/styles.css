@@ -494,6 +494,10 @@ h1, h2, h3, p { margin-top: 0; }
 .medical-record-timeline { display: grid; gap: 12px; }
 .medical-record-timeline > h2 { margin: 0 0 2px; color: #3b594e; font: 700 16px Manrope, sans-serif; }
 .medical-record-card { padding: 18px; border: 1px solid #e7ece8; border-radius: 9px; background: #fff; }
+.patient-profile-edit-card { max-width: 760px; }
+.patient-profile-edit-card > p { margin: -4px 0 15px; color: #87948e; font-size: 10px; }
+.patient-profile-edit-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; align-items: end; }
+.patient-profile-edit-form .button { justify-self: start; gap: 7px; }
 .medical-record-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid #edf0ee; }
 .medical-record-heading h3 { margin: 7px 0 0; color: #294d40; font: 700 16px Manrope, sans-serif; }
 .medical-record-tag { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border-radius: 12px; color: #4a7c61; background: #eef6ef; font-size: 9px; font-weight: 700; }
@@ -514,6 +518,11 @@ h1, h2, h3, p { margin-top: 0; }
 .record-upload-form .button { justify-self: start; }
 .record-upload-form .patient-field input[type="file"], .record-form-grid input[type="file"] { width: 100%; padding: 8px; border: 1px solid #e4eae6; border-radius: 6px; background: #fff; color: #52675c; font-size: 10px; }
 .record-upload-form progress, .visit-record-form progress { width: 100%; height: 7px; grid-column: 1 / -1; accent-color: #2f795f; }
+.appointment-visit-window { display: flex; align-items: flex-start; gap: 9px; margin-top: 12px; padding: 12px; border: 1px solid #dfece4; border-radius: 7px; color: #4a7560; background: #f0f7f1; }
+.appointment-visit-window > svg { flex: 0 0 auto; margin-top: 1px; }
+.appointment-visit-window > span { display: grid; gap: 4px; }
+.appointment-visit-window strong { font-size: 10px; }
+.appointment-visit-window small { color: #74877b; font-size: 9px; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .visit-record-form { display: grid; gap: 13px; padding: 16px; border: 1px solid #e3ebe5; border-radius: 8px; background: #f9fbf9; }
 .record-form-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .record-form-heading h3 { margin: 0; color: #36564a; font: 700 14px Manrope, sans-serif; }
@@ -636,6 +645,7 @@ h1, h2, h3, p { margin-top: 0; }
   .appointment-form-card { margin-top: 21px; padding: 22px 17px; }
   .appointment-form-card > h1, .appointment-page-heading h1 { font-size: 24px; }
   .appointment-fields-grid, .request-details { grid-template-columns: 1fr; }
+  .patient-profile-edit-form { grid-template-columns: 1fr; }
   .appointment-status-card, .request-card { padding: 16px; }
   .request-card-heading { flex-direction: column; gap: 9px; }
   .request-date { white-space: normal; }

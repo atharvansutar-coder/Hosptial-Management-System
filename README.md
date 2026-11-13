@@ -56,6 +56,8 @@ Administrators can add hospitals by name from the **Manage hospitals** section o
 
 Patients can create an account from **Patient account**, provide their contact details and appointment request, and track its status after submission. The profile and pending request are saved together; the request appears in the assigned hospital's **Request inbox**. Receptionists and admins can confirm it by assigning an available doctor and time slot, or decline it with a reason.
 
+Hospital staff can search a patient and open **Patient history** to correct the patient's name or mobile number and attach multiple PDF, JPG, or PNG documents to visit records. When confirming or rescheduling an appointment, receptionists and admins can set an approximate arrival window around the reserved slot. Patients see a live countdown to the opening of that window in appointment status.
+
 ## Tests
 
 ```sh

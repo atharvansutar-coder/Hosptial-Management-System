@@ -122,11 +122,11 @@ app.get('/api/public/appointment-tracking/:id', (request, response) => {
     response.status(404).json({ exists: false })
     return
   }
-  const { appointmentId, hospitalId, department, status, requestedDate, assignedDate, assignedTime, doctorName, needsReschedule } = data
+  const { appointmentId, hospitalId, department, status, requestedDate, assignedDate, assignedTime, visitWindowStart, visitWindowEnd, doctorName, needsReschedule } = data
   response.json({
     exists: true,
     id: parsedId.data,
-    data: { appointmentId, hospitalId, department, status, requestedDate, assignedDate, assignedTime, doctorName, needsReschedule },
+    data: { appointmentId, hospitalId, department, status, requestedDate, assignedDate, assignedTime, visitWindowStart, visitWindowEnd, doctorName, needsReschedule },
   })
 })
 
@@ -669,6 +669,11 @@ app.post('/api/transactions', requireAuth, writeLimit, (request, response) => {
             || doctor.status !== 'available' || Number(slot.booked) > Number(slot.capacity)) {
             throw Object.assign(new Error('The selected doctor or appointment slot is no longer available.'), { status: 409 })
           }
+          const windowStart = String(operation.data.visitWindowStart ?? '')
+          const windowEnd = String(operation.data.visitWindowEnd ?? '')
+          if (windowStart && windowEnd && (String(slot.startTime) < windowStart || String(slot.startTime) >= windowEnd)) {
+            throw Object.assign(new Error('The approximate visit window must include the selected appointment slot.'), { status: 400 })
+          }
         }
         if (operation.collection === 'appointments' && operation.previous?.status === 'pending'
           && operation.data.status === 'confirmed' && !operation.data.slotId) {
@@ -873,7 +878,19 @@ function canWrite(
     return changedKeys.length > 0 && changedKeys.every((key) => ['status', 'recordId'].includes(key))
       && (next.status === 'completed' || next.recordId === previous?.recordId)
   }
-  if (table === 'patients') return !previous || next.ownerUid === previous.ownerUid
+  if (table === 'patients') {
+    if (!previous) return ['receptionist', 'admin'].includes(user.role)
+      && next.ownerUid === id
+      && Array.isArray(next.hospitalIds) && next.hospitalIds.includes(user.hospitalId)
+    if (!['receptionist', 'doctor', 'admin'].includes(user.role) || next.ownerUid !== previous.ownerUid) return false
+    const changedKeys = Object.keys(next).filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(next[key]))
+    if (!changedKeys.every((key) => ['details', 'mobileNumber', 'updatedAt'].includes(key))) return false
+    const profileDetails = z.object({
+      name: z.string().trim().min(1).max(200),
+      mobileNumber: z.string().trim().min(7).max(24),
+    }).passthrough().safeParse(next.details)
+    return profileDetails.success && profileDetails.data.mobileNumber === next.mobileNumber
+  }
   if (['patientDetails', 'tickets', 'tracking', 'appointmentTracking'].includes(table)) return true
   return ['admin'].includes(user.role) && ['notifications', 'consents'].includes(table)
 }
@@ -915,6 +932,18 @@ function validateDocument(table: string, data: RowData) {
   }
   if (data.department !== undefined && !allowedDepartments.has(data.department as string)) {
     throw Object.assign(new Error('Invalid department.'), { status: 400 })
+  }
+  if (table === 'appointments' || table === 'appointmentTracking') {
+    const visitWindowStart = data.visitWindowStart
+    const visitWindowEnd = data.visitWindowEnd
+    if (visitWindowStart !== undefined || visitWindowEnd !== undefined) {
+      const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/
+      if (typeof visitWindowStart !== 'string' || typeof visitWindowEnd !== 'string'
+        || (visitWindowStart !== '' || visitWindowEnd !== '') && (!timePattern.test(visitWindowStart)
+          || !timePattern.test(visitWindowEnd) || visitWindowStart >= visitWindowEnd)) {
+        throw Object.assign(new Error('Enter a valid approximate visit window with the end after the start.'), { status: 400 })
+      }
+    }
   }
   if (table === 'appointments') {
     z.object({

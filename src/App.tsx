@@ -194,6 +194,8 @@ type Appointment = {
   status: AppointmentStatus
   assignedDate: string
   assignedTime: string
+  visitWindowStart: string
+  visitWindowEnd: string
   staffNote: string
   needsReschedule: boolean
   patientAction: 'none' | 'reschedule_requested' | 'visit_confirmed'
@@ -214,6 +216,8 @@ type AppointmentTracking = {
   requestedDate: string
   assignedDate: string
   assignedTime: string
+  visitWindowStart: string
+  visitWindowEnd: string
   doctorName: string
   needsReschedule: boolean
 }
@@ -298,6 +302,21 @@ function getLocalDateInputValue() {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${date.getFullYear()}-${month}-${day}`
+}
+
+function addMinutesToTime(time: string, minutes: number) {
+  const [hours, mins] = time.split(':').map(Number)
+  const totalMinutes = Math.min(23 * 60 + 59, hours * 60 + mins + minutes)
+  return `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`
+}
+
+function formatCountdown(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
+  const days = Math.floor(totalSeconds / 86400)
+  const hours = Math.floor((totalSeconds % 86400) / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  return `${days ? `${days}d ` : ''}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
 function isPatientDetails(value: unknown): value is PatientDetails {
@@ -1393,6 +1412,8 @@ function AppointmentRequestPage({ onBack, onError, onSubmitted }: { onBack: () =
           status: 'pending',
           assignedDate: '',
           assignedTime: '',
+          visitWindowStart: '',
+          visitWindowEnd: '',
           staffNote: '',
           needsReschedule: false,
           patientAction: 'none',
@@ -1410,6 +1431,8 @@ function AppointmentRequestPage({ onBack, onError, onSubmitted }: { onBack: () =
           requestedDate,
           assignedDate: '',
           assignedTime: '',
+          visitWindowStart: '',
+          visitWindowEnd: '',
           doctorName: '',
           needsReschedule: false,
         })
@@ -1519,6 +1542,8 @@ function toAppointment(snapshot: QueryDocumentSnapshot<DocumentData>): Appointme
     status: data.status as AppointmentStatus,
     assignedDate: String(data.assignedDate ?? ''),
     assignedTime: String(data.assignedTime ?? ''),
+    visitWindowStart: String(data.visitWindowStart ?? ''),
+    visitWindowEnd: String(data.visitWindowEnd ?? ''),
     staffNote: String(data.staffNote ?? ''),
     needsReschedule: data.needsReschedule === true,
     patientAction: data.patientAction === 'reschedule_requested' || data.patientAction === 'visit_confirmed' ? data.patientAction : 'none',
@@ -1542,6 +1567,8 @@ function toAppointmentTracking(id: string, data: DocumentData): AppointmentTrack
     requestedDate: String(data.requestedDate ?? ''),
     assignedDate: String(data.assignedDate ?? ''),
     assignedTime: String(data.assignedTime ?? ''),
+    visitWindowStart: String(data.visitWindowStart ?? ''),
+    visitWindowEnd: String(data.visitWindowEnd ?? ''),
     doctorName: String(data.doctorName ?? ''),
     needsReschedule: data.needsReschedule === true,
   }
@@ -1672,6 +1699,27 @@ function AppointmentStatusPage({ appointmentId, userId, authReady, onBack, onErr
   )
 }
 
+function AppointmentVisitWindow({ date, start, end }: { date: string; start: string; end: string }) {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const startsAt = new Date(`${date}T${start}:00`).getTime()
+  const endsAt = new Date(`${date}T${end}:00`).getTime()
+  if (!Number.isFinite(startsAt) || !Number.isFinite(endsAt) || endsAt <= startsAt) return null
+
+  const label = now < startsAt
+    ? `Visit window opens in ${formatCountdown(startsAt - now)}`
+    : now < endsAt
+      ? `Your visit window is open · closes in ${formatCountdown(endsAt - now)}`
+      : 'Your visit window has passed. Please contact the hospital if you still need care.'
+  return <div className="appointment-visit-window" role="timer" aria-live="off">
+    <Clock3 size={17} />
+    <span><strong>Approximate visit window: {start}–{end}</strong><small>{label}</small></span>
+  </div>
+}
+
 function AppointmentStatusCard({
   appointment,
   tracking,
@@ -1692,6 +1740,8 @@ function AppointmentStatusCard({
   const status = appointment?.status ?? tracking?.status ?? 'pending'
   const assignedDate = appointment?.assignedDate ?? tracking?.assignedDate ?? ''
   const assignedTime = appointment?.assignedTime ?? tracking?.assignedTime ?? ''
+  const visitWindowStart = appointment?.visitWindowStart ?? tracking?.visitWindowStart ?? ''
+  const visitWindowEnd = appointment?.visitWindowEnd ?? tracking?.visitWindowEnd ?? ''
   const doctorName = doctor?.name || tracking?.doctorName || ''
   const canAct = Boolean(appointment && userId && appointment.ownerUid === userId)
   const confirmed = status === 'confirmed' || status === 'rescheduled'
@@ -1737,6 +1787,7 @@ function AppointmentStatusCard({
       <p>{t(appointment?.department ?? tracking?.department ?? '')} · {t('Requested for')} {appointment?.requestedDate ?? tracking?.requestedDate ?? ''}</p>
       {statusNotice && <div className="doctor-notice"><AlertTriangle size={17} /><span><strong>{t('Appointment needs your attention')}</strong><small>{doctor?.status === 'late' ? `${t('Your doctor is running')} ${doctor.lateByMinutes} ${t('minutes late.')}` : doctor?.status === 'on_leave' ? t('Your doctor is on leave. The hospital will arrange a new time.') : doctor?.status === 'emergency_only' ? t('Your doctor is handling emergencies only. Please contact the hospital.') : t('The hospital flagged your appointment for rescheduling.')} {doctor?.note}</small></span></div>}
       {confirmed && assignedDate && <div className="appointment-assignment"><CalendarDays size={17} /><span><strong>{assignedDate} {t('at')} {assignedTime}</strong><small>{t(status === 'confirmed' ? 'Confirmed appointment time' : 'Suggested new appointment time')}</small></span></div>}
+      {confirmed && assignedDate && visitWindowStart && visitWindowEnd && <AppointmentVisitWindow date={assignedDate} start={visitWindowStart} end={visitWindowEnd} />}
       {offerActive && appointment && <div className="doctor-notice"><CalendarDays size={17} /><span><strong>{t('A visit time opened up')}</strong><small>{appointment.waitlistOfferDate} {t('at')} {appointment.waitlistOfferTime} · {t('Offer expires at')} {new Date(appointment.waitlistOfferExpiresAt!.seconds * 1000).toLocaleTimeString()}</small></span></div>}
       {confirmed && <>
         <div className="appointment-hospital-contact">
@@ -1788,7 +1839,42 @@ function PatientHistoryPage({ patient, hospital, role, patientView, onBack, onEr
   const [loading, setLoading] = useState(true)
   const [privacyBusy, setPrivacyBusy] = useState(false)
   const [privacyMessage, setPrivacyMessage] = useState('')
+  const [editableDetails, setEditableDetails] = useState<PatientDetails>(patient?.details ?? emptyPatientDetails())
+  const [savingPatientDetails, setSavingPatientDetails] = useState(false)
+  const canEditPatientDetails = !patientView && role !== null
   const canAttachFiles = !patientView && (role === 'receptionist' || role === 'admin')
+
+  useEffect(() => {
+    setEditableDetails(patient?.details ?? emptyPatientDetails())
+  }, [patient?.id, patient?.details])
+
+  const savePatientDetails = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!db || !patient || !hospital || !canEditPatientDetails) return
+    const updatedDetails = {
+      ...editableDetails,
+      name: patientFullName(editableDetails).trim(),
+      mobileNumber: editableDetails.mobileNumber.trim(),
+    }
+    if (!updatedDetails.name || updatedDetails.mobileNumber.length < 7 || updatedDetails.mobileNumber.length > 24) {
+      onError('Enter a patient name and a valid mobile number (7–24 characters).')
+      return
+    }
+    setSavingPatientDetails(true)
+    try {
+      await updateDoc(doc(db, 'patients', patient.id), {
+        details: updatedDetails,
+        mobileNumber: updatedDetails.mobileNumber,
+        updatedAt: serverTimestamp(),
+      })
+      setEditableDetails(updatedDetails)
+      onError('')
+    } catch (reason) {
+      onError(reason instanceof Error ? `Unable to update patient details: ${reason.message}` : 'Unable to update patient details.')
+    } finally {
+      setSavingPatientDetails(false)
+    }
+  }
 
   const withdrawConsent = async () => {
     setPrivacyBusy(true)
@@ -1847,10 +1933,19 @@ function PatientHistoryPage({ patient, hospital, role, patientView, onBack, onEr
     <main className={patientView ? 'appointment-page patient-history-page' : 'dashboard-page staff-tool-page'}>
       <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> {patientView ? 'Back to CareFlow' : 'Back to patient search'}</button>
       <div className="appointment-page-heading"><div className="eyebrow"><span className="eyebrow-line" /> {patientView ? 'MY RECORDS' : 'PRIVATE PATIENT HISTORY'}</div><h1>{patientView ? 'Your visit history.' : 'Patient history.'}</h1>
-        <p>{patientView ? 'Your visit records and uploaded documents are available here.' : patient ? `${patientFullName(patient.details)} · ${patient.mobileNumber}` : 'Patient history'}</p>
+        <p>{patientView ? 'Your visit records and uploaded documents are available here.' : patient ? `${patientFullName(editableDetails)} · ${editableDetails.mobileNumber || patient.mobileNumber}` : 'Patient history'}</p>
       </div>
       {!patient && <div className="appointment-empty"><span className="empty-icon"><ClipboardList size={21} /></span><strong>Sign in to view your records</strong><p>Open My Records from the patient page to access records linked to your account.</p></div>}
       {patient && <>
+        {canEditPatientDetails && <section className="staff-tool-card patient-profile-edit-card">
+          <h2>Patient contact details</h2>
+          <p>Update the patient's name or mobile number for this hospital profile.</p>
+          <form className="patient-profile-edit-form" onSubmit={(event) => void savePatientDetails(event)}>
+            <label className="patient-field">Patient name<input required maxLength={200} value={patientFullName(editableDetails)} onChange={(event) => setEditableDetails((current) => ({ ...current, name: event.target.value }))} /></label>
+            <label className="patient-field">Mobile number<input required type="tel" minLength={7} maxLength={24} value={editableDetails.mobileNumber} onChange={(event) => setEditableDetails((current) => ({ ...current, mobileNumber: event.target.value }))} /></label>
+            <button className="button button-dark" disabled={savingPatientDetails}>{savingPatientDetails ? 'Saving…' : <>Save patient details <Check size={15} /></>}</button>
+          </form>
+        </section>}
         {patientView && <section className="staff-note privacy-controls">
           <ShieldCheck size={17} />
           <div><strong>Privacy choices</strong><p>Withdraw consent or ask the hospital for an export or deletion review. Required clinical records may need to be retained.</p>
@@ -2648,6 +2743,8 @@ function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital 
   const [actionDate, setActionDate] = useState('')
   const [actionDoctorId, setActionDoctorId] = useState('')
   const [actionSlotId, setActionSlotId] = useState('')
+  const [visitWindowStart, setVisitWindowStart] = useState('')
+  const [visitWindowEnd, setVisitWindowEnd] = useState('')
   const [staffNote, setStaffNote] = useState('')
   const [savingId, setSavingId] = useState('')
   const canUpdate = role === 'receptionist' || role === 'admin'
@@ -2729,6 +2826,9 @@ function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital 
     setActionDate(request.assignedDate || request.requestedDate)
     setActionDoctorId(request.doctorId || request.requestedDoctorId || doctors.find((doctor) => doctor.department === request.department && doctor.status === 'available')?.id || '')
     setActionSlotId(request.slotId || request.requestedSlotId || '')
+    const start = request.visitWindowStart || request.assignedTime || availableSlots.find((slot) => slot.id === (request.slotId || request.requestedSlotId))?.startTime || '09:00'
+    setVisitWindowStart(start)
+    setVisitWindowEnd(request.visitWindowEnd || addMinutesToTime(start, 30))
     setStaffNote('')
   }
 
@@ -2739,6 +2839,19 @@ function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital 
     if (action !== 'declined' && (!actionDate || !actionDoctorId || !actionSlotId)) {
       onError('Choose a doctor and an available slot before confirming or suggesting a new time.')
       return
+    }
+    if (action !== 'declined') {
+      const selectedSlot = availableSlots.find((slot) => slot.id === actionSlotId)
+      if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(visitWindowStart)
+        || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(visitWindowEnd)
+        || visitWindowStart >= visitWindowEnd) {
+        onError('Set a valid approximate visit window. The end time must be after the start time.')
+        return
+      }
+      if (selectedSlot && (selectedSlot.startTime < visitWindowStart || selectedSlot.startTime >= visitWindowEnd)) {
+        onError('The approximate visit window must include the selected appointment slot.')
+        return
+      }
     }
     if (action === 'declined' && !staffNote.trim()) {
       onError('Add a reason before declining the request.')
@@ -2784,6 +2897,8 @@ function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital 
           status: action,
           assignedDate: action === 'declined' ? '' : actionDate,
           assignedTime: action === 'declined' ? '' : String(slotSnapshot?.data()?.startTime ?? ''),
+          visitWindowStart: action === 'declined' ? '' : visitWindowStart,
+          visitWindowEnd: action === 'declined' ? '' : visitWindowEnd,
           doctorId: action === 'declined' ? '' : actionDoctorId,
           slotId: action === 'declined' ? '' : actionSlotId,
           staffNote: staffNote.trim(),
@@ -2794,6 +2909,8 @@ function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital 
           status: action,
           assignedDate: action === 'declined' ? '' : actionDate,
           assignedTime: action === 'declined' ? '' : String(slotSnapshot?.data()?.startTime ?? ''),
+          visitWindowStart: action === 'declined' ? '' : visitWindowStart,
+          visitWindowEnd: action === 'declined' ? '' : visitWindowEnd,
           doctorName: action === 'declined' ? '' : assignedDoctor?.name ?? '',
           needsReschedule: false,
         })
@@ -2844,11 +2961,21 @@ function RequestInbox({ hospital, role, onBack, onError }: { hospital: Hospital 
                     </select>
                   </label>
                   <label className="patient-field patient-field-wide">Available time
-                    <select required value={actionSlotId} onChange={(event) => setActionSlotId(event.target.value)}>
+                    <select required value={actionSlotId} onChange={(event) => {
+                      setActionSlotId(event.target.value)
+                      const slot = availableSlots.find((item) => item.id === event.target.value)
+                      if (slot) {
+                        setVisitWindowStart(slot.startTime)
+                        setVisitWindowEnd(addMinutesToTime(slot.startTime, 30))
+                      }
+                    }}>
                       <option value="">Choose available slot</option>
                       {availableSlots.map((slot) => <option key={slot.id} value={slot.id}>{slot.startTime} · {slot.capacity - slot.booked} available</option>)}
                     </select>
                   </label>
+                  <label className="patient-field">Approximate arrival from<input required type="time" value={visitWindowStart} onChange={(event) => setVisitWindowStart(event.target.value)} /></label>
+                  <label className="patient-field">Approximate arrival until<input required type="time" value={visitWindowEnd} onChange={(event) => setVisitWindowEnd(event.target.value)} /></label>
+                  <p className="checkin-description patient-field-wide">The patient sees a live countdown to this window. Make sure it includes the reserved slot.</p>
                   {!availableSlots.length && actionDoctorId && <p className="checkin-description patient-field-wide">No open slot for this doctor on this date. Add a slot in Slot Scheduler.</p>}
                 </div>}
                 <label className="patient-field">{actionRequest.action === 'declined' ? 'Reason for declining' : 'Note for patient (optional)'}<textarea required={actionRequest.action === 'declined'} maxLength={500} rows={2} value={staffNote} onChange={(event) => setStaffNote(event.target.value)} /></label>
@@ -3168,6 +3295,8 @@ function CreateRequestOnBehalf({ hospital, role, onBack, onError, onCreated }: {
           status: 'pending',
           assignedDate: '',
           assignedTime: '',
+          visitWindowStart: '',
+          visitWindowEnd: '',
           staffNote: '',
           needsReschedule: false,
           patientAction: 'none',
@@ -3184,6 +3313,8 @@ function CreateRequestOnBehalf({ hospital, role, onBack, onError, onCreated }: {
           requestedDate,
           assignedDate: '',
           assignedTime: '',
+          visitWindowStart: '',
+          visitWindowEnd: '',
           doctorName: '',
           needsReschedule: false,
         })

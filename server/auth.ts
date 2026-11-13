@@ -159,6 +159,8 @@ export async function registerPatientWithRequest(
       status: 'pending',
       assignedDate: '',
       assignedTime: '',
+      visitWindowStart: '',
+      visitWindowEnd: '',
       staffNote: '',
       needsReschedule: false,
       patientAction: 'none',
@@ -176,6 +178,8 @@ export async function registerPatientWithRequest(
       requestedDate: request.requestedDate,
       assignedDate: '',
       assignedTime: '',
+      visitWindowStart: '',
+      visitWindowEnd: '',
       doctorName: '',
       needsReschedule: false,
     })

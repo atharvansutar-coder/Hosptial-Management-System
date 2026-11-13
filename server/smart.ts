@@ -5,6 +5,12 @@ function hospitalNameFor(hospitalId: string) {
   return listHospitals().find((hospital) => hospital.id === hospitalId)?.name ?? 'the hospital'
 }
 
+function addMinutesToTime(time: string, minutes: number) {
+  const [hours, mins] = time.split(':').map(Number)
+  const totalMinutes = Math.min(23 * 60 + 59, hours * 60 + mins + minutes)
+  return `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`
+}
+
 function stableId(key: string) {
   return `msg_${createHash('sha256').update(key).digest('hex')}`
 }
@@ -316,6 +322,8 @@ export function acceptWaitlistOffer(uid: string, appointmentId: string) {
       slotId,
       assignedDate: latestSlot.date,
       assignedTime: latestSlot.startTime,
+      visitWindowStart: latestSlot.startTime,
+      visitWindowEnd: addMinutesToTime(String(latestSlot.startTime), 30),
     }
     for (const key of ['waitlistOfferSlotId', 'waitlistOfferExpiresAt', 'waitlistOfferDate', 'waitlistOfferTime', 'waitlistOfferDoctorId']) {
       delete assigned[key]
@@ -326,6 +334,8 @@ export function acceptWaitlistOffer(uid: string, appointmentId: string) {
       status: 'confirmed',
       assignedDate: latestSlot.date,
       assignedTime: latestSlot.startTime,
+      visitWindowStart: latestSlot.startTime,
+      visitWindowEnd: addMinutesToTime(String(latestSlot.startTime), 30),
       doctorName: assignedDoctor.name,
     })
     queueAppointmentUpdate(assigned)

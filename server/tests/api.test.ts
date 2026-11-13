@@ -61,6 +61,7 @@ function makeAppointment(ownerUid: string, hospitalId: string, status = 'pending
 }
 
 let hospitalTestAdmin: Awaited<ReturnType<typeof addStaff>> | null = null
+let northHospitalTestAdmin: Awaited<ReturnType<typeof addStaff>> | null = null
 
 describe('local CareFlow API', () => {
   beforeAll(() => {
@@ -295,11 +296,147 @@ describe('local CareFlow API', () => {
 
   it('denies staff access across hospital boundaries', async () => {
     const agent = await addStaff('north-admin@example.test', 'admin', 'northside-medical-center')
+    northHospitalTestAdmin = agent
     const appointmentId = randomUUID()
     writeDocument('appointments', appointmentId, makeAppointment('patient-uid', 'riverside-general'))
 
     const response = await agent.get(`/api/data/appointments/${appointmentId}`)
     expect(response.status).toBe(403)
+  })
+
+  it('allows authorized front-desk staff to update a patient name and mobile without changing account ownership', async () => {
+    const patientId = randomUUID()
+    writeDocument('patients', patientId, {
+      ownerUid: patientId,
+      hospitalIds: ['central-city-hospital'],
+      details: { name: 'Original Patient', mobileNumber: '+919900000020' },
+      mobileNumber: '+919900000020',
+    })
+    if (!hospitalTestAdmin || !northHospitalTestAdmin) throw new Error('Hospital test staff accounts were not initialized.')
+    const staff = hospitalTestAdmin
+    const updated = await staff.post('/api/transactions').send({
+      operations: [{
+        type: 'update',
+        collection: 'patients',
+        id: patientId,
+        data: {
+          details: { name: 'Updated Patient', mobileNumber: '+919900000021' },
+          mobileNumber: '+919900000021',
+          updatedAt: new Date().toISOString(),
+        },
+      }],
+    })
+    expect(updated.status).toBe(200)
+    expect((await staff.get(`/api/data/patients/${patientId}`)).body.data).toMatchObject({
+      ownerUid: patientId,
+      hospitalIds: ['central-city-hospital'],
+      details: { name: 'Updated Patient', mobileNumber: '+919900000021' },
+      mobileNumber: '+919900000021',
+    })
+
+    const denied = await northHospitalTestAdmin.post('/api/transactions').send({
+      operations: [{
+        type: 'update',
+        collection: 'patients',
+        id: patientId,
+        data: { details: { name: 'Unauthorized', mobileNumber: '+919900000022' }, mobileNumber: '+919900000022' },
+      }],
+    })
+    expect(denied.status).toBe(403)
+  })
+
+  it('publishes the assigned approximate visit window for a live patient countdown', async () => {
+    if (!hospitalTestAdmin) throw new Error('Hospital test administrator was not initialized.')
+    const staff = hospitalTestAdmin
+    const patientId = randomUUID()
+    const appointmentId = randomUUID()
+    const trackingId = randomUUID()
+    const doctorId = randomUUID()
+    const slotId = randomUUID()
+    const date = '2026-11-20'
+    const appointment = { ...makeAppointment(patientId, 'central-city-hospital'), trackingId }
+    const slot = {
+      hospitalId: 'central-city-hospital',
+      doctorId,
+      date,
+      startTime: '10:30',
+      capacity: 1,
+      booked: 0,
+    }
+    writeDocument('appointments', appointmentId, appointment)
+    writeDocument('appointmentTracking', trackingId, {
+      appointmentId,
+      ownerUid: patientId,
+      hospitalId: 'central-city-hospital',
+      department: appointment.department,
+      status: 'pending',
+      requestedDate: date,
+      assignedDate: '',
+      assignedTime: '',
+      visitWindowStart: '',
+      visitWindowEnd: '',
+      doctorName: '',
+      needsReschedule: false,
+    })
+    writeDocument('doctors', doctorId, {
+      name: 'Window Test Doctor',
+      userId: 'window-test-doctor-user',
+      hospitalId: 'central-city-hospital',
+      department: appointment.department,
+      status: 'available',
+    })
+    writeDocument('slots', slotId, slot)
+
+    const updated = await staff.post('/api/transactions').send({
+      operations: [
+        {
+          type: 'update',
+          collection: 'appointments',
+          id: appointmentId,
+          data: {
+            status: 'confirmed',
+            doctorId,
+            slotId,
+            assignedDate: date,
+            assignedTime: '10:30',
+            visitWindowStart: '10:15',
+            visitWindowEnd: '10:45',
+          },
+        },
+        { type: 'update', collection: 'slots', id: slotId, baseData: slot, data: { booked: 1 } },
+        {
+          type: 'update',
+          collection: 'appointmentTracking',
+          id: trackingId,
+          data: {
+            status: 'confirmed',
+            assignedDate: date,
+            assignedTime: '10:30',
+            visitWindowStart: '10:15',
+            visitWindowEnd: '10:45',
+            doctorName: 'Window Test Doctor',
+          },
+        },
+      ],
+    })
+    expect(updated.status).toBe(200)
+    const publicStatus = await supertest(app).get(`/api/public/appointment-tracking/${trackingId}`)
+    expect(publicStatus.body.data).toMatchObject({
+      assignedDate: date,
+      assignedTime: '10:30',
+      visitWindowStart: '10:15',
+      visitWindowEnd: '10:45',
+    })
+
+    const invalidWindow = await staff.post('/api/transactions').send({
+      operations: [{
+        type: 'update',
+        collection: 'appointmentTracking',
+        id: trackingId,
+        data: { visitWindowStart: '11:00', visitWindowEnd: '10:00' },
+      }],
+    })
+    expect(invalidWindow.status).toBe(400)
   })
 
   it('does not allow a patient to read another patient medical record', async () => {
