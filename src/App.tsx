@@ -900,8 +900,7 @@ export default function App() {
         <Route path={viewPaths['admin-access-requests']} element={staffReady && staffRole === 'admin'
           ? <StaffAccessRequestsPage onBack={() => navigateToView('admin')} onError={setError} />
           : <AdminLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
-        <Route path={viewPaths['staff-access-request']} element={<StaffAccessRequestForm authReady={authReady} onBack={() => navigateToView('staff')} onError={setError} />} />
-        <Route path={viewPaths['staff-access-requests']} element={staffReady && staffRole === 'admin'
+        <Route path={viewPaths['staff-access-request']} element={<StaffAccessRequestForm authReady={authReady} onBack={() => navigateToView('staff')} onError={setError} />} /        <Route path={viewPaths['staff-access-requests']} element={staffReady && staffRole === 'admin'
           ? <StaffAccessRequestsPage onBack={() => navigateToView('staff')} onError={setError} />
           : <StaffLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
         <Route path={viewPaths['staff-inbox']} element={staffReady
