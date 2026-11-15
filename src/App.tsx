@@ -900,7 +900,8 @@ export default function App() {
         <Route path={viewPaths['admin-access-requests']} element={staffReady && staffRole === 'admin'
           ? <StaffAccessRequestsPage onBack={() => navigateToView('admin')} onError={setError} />
           : <AdminLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
-        <Route path={viewPaths['staff-access-request']} element={<StaffAccessRequestForm authReady={authReady} onBack={() => navigateToView('staff')} onError={setError} />} /        <Route path={viewPaths['staff-access-requests']} element={staffReady && staffRole === 'admin'
+        <Route path={viewPaths['staff-access-request']} element={<StaffAccessRequestForm authReady={authReady} onBack={() => navigateToView('staff')} onError={setError} />} />
+        <Route path={viewPaths['staff-access-requests']} element={staffReady && staffRole === 'admin'
           ? <StaffAccessRequestsPage onBack={() => navigateToView('staff')} onError={setError} />
           : <StaffLogin authReady={authReady} onBack={() => navigateToView('patient')} onError={setError} />} />
         <Route path={viewPaths['staff-inbox']} element={staffReady
@@ -937,7 +938,7 @@ export default function App() {
           if (trackingId) {
             navigate({ pathname: viewPaths['appointment-status'], search: `?${new URLSearchParams({ appointment: trackingId }).toString()}` })
           } else {
-            navigateToView('patient')
+            navigateToView('appointment-status')
           }
         }} onError={setError} />} />
         <Route path={viewPaths['appointment-request']} element={<AppointmentRequestPage onBack={() => navigateToView('patient')} onError={setError} onSubmitted={(id) => {
